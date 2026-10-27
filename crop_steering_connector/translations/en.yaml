@@ -1,0 +1,4 @@
+configuration:
+  pairing_code:
+    name: "Pairing code"
+    description: "Paste the code generated in Profile › Connections, in Cropilot. After pairing, it is no longer used."

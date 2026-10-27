@@ -1,0 +1,21 @@
+name: "Conector do Crop Steering"
+version: "0.2.1"
+slug: "crop_steering_connector"
+description: "Liga este Home Assistant ao Cropilot, que lê os sensores de temperatura e umidade, comanda o ar-condicionado, o desumidificador e as tomadas liberados e liga a bomba de rega nos disparos."
+arch:
+  - "aarch64"
+  - "amd64"
+init: false
+startup: "application"
+boot: "auto"
+homeassistant: "2024.4.0"
+homeassistant_api: true
+apparmor: true
+backup_exclude:
+  - "connector_token"
+  - "connector_token.*"
+  - "pump_watch.json"
+  - "pump_watch.json.*"
+options: {}
+schema:
+  pairing_code: 'match(^[0-9]{1,20}\|cs_[A-Za-z0-9]{40}[0-9a-f]{8}$)?'

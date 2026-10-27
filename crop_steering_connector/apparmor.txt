@@ -1,0 +1,38 @@
+#include <tunables/global>
+
+# The Supervisor replaces the profile name with the app ID; it must be the slug (apps/guides/security).
+profile crop_steering_connector flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # Capabilities
+  file,
+  signal (send) set=(kill,term,int,hup,cont),
+
+  # Outbound only: HTTPS to the Cropilot, HTTP to the Supervisor proxy, and DNS
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
+
+  # S6 overlay
+  /init ix,
+  /bin/** ix,
+  /usr/bin/** ix,
+  /run/{s6,s6-rc*,service}/** ix,
+  /package/** ix,
+  /command/** ix,
+  /etc/services.d/** rwix,
+  /etc/cont-init.d/** rwix,
+  /etc/cont-finish.d/** rwix,
+  /etc/s6-overlay/** rwix,
+  /run/{,**} rwk,
+  /dev/tty rw,
+  /tmp/** rwk,
+
+  # The start script and the connector
+  /run.sh rix,
+  /app/** r,
+
+  # Options and the pairing
+  /data/** rw,
+}
