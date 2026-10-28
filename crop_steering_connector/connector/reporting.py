@@ -2,7 +2,8 @@
 
 A 0.2.0 report also carries the pump watch's queued events, and a queued event brings the next report
 forward, at least 15 s after the last one (the server takes 4 reports a minute). It also carries each
-entity's HA device and the device names, from the device map read before /states.
+entity's HA device and the device names, from the device map read before /states. After the report, the
+sensor refresh (refresh.py) runs with the states the report read.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from .context import Context
 from .devices import DeviceMapReader
 from .entities import build_report, report_entities
 from .pump_store import PUMP_ENTITY_RE, PumpEvent, is_max_on
+from .refresh import SensorRefresher
 from .transport import Response, TransportError
 
 REPORT_INTERVAL_SECONDS = 60.0
@@ -52,6 +54,7 @@ class ReportLoop:
         self._context = context
         self._backoff = Backoff(BACKOFF_BASE_SECONDS, BACKOFF_CAP_SECONDS, context.rng)
         self._devices = DeviceMapReader(context)
+        self._refresher = SensorRefresher(context)
         self._restriction = 0
         self._ha_was_running = True
         self._first_report_logged = False
@@ -133,6 +136,14 @@ class ReportLoop:
             self._last_dropped = dropped
             if dropped:
                 context.log.warning(messages.REPORT_TRIMMED.format(count=dropped))
+        delay = self._post(body, sent)
+        if not context.halt.is_set():
+            # After the report, so a fresh allowlist is the one used; the report's delay stands whatever happens here.
+            self._refresher.refresh(states, now)
+        return delay
+
+    def _post(self, body: bytes, sent: int) -> float:
+        context = self._context
         try:
             answer = context.server.post("/reports", context.token, body=body)
         except TransportError as error:

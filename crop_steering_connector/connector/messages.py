@@ -6,21 +6,22 @@ a token, the pairing code, a payload or a device name.
 """
 
 V13_REVOKED = (
-    "Pareamento revogado. Gere um código novo em Perfil › Conexões, no Cropilot, e cole em “Código de pareamento”."
+    "Pareamento revogado. Gere um código novo em Dispositivos › Conexões, no Cropilot, e cole em “Código de "
+    "pareamento”."
 )
 V14_FORBIDDEN = "A conta no Cropilot não está liberada para o conector. Fale com a equipe do Cropilot."
 V15_TOO_LARGE = (
-    "O relatório passou do tamanho aceito pelo Cropilot. O próximo vai só com os aparelhos liberados."
+    "O relatório passou do tamanho aceito pelo Cropilot. O próximo vai só com os aparelhos que o Cropilot usa."
 )
 V16_PAIRED = "Pareado com o Cropilot."
 V17_WAITING_HA = "Aguardando o Home Assistant terminar de iniciar."
 V33_PAIRING_CODE_REFUSED = (
-    "Código de pareamento vencido ou já usado. Gere um código novo em Perfil › Conexões, no Cropilot, e cole em "
+    "Código de pareamento vencido ou já usado. Gere um código novo em Dispositivos › Conexões, no Cropilot, e cole em "
     "“Código de pareamento”."
 )
 V34_SERVER_URL_INVALID = "O “Endereço do servidor” não é aceito. Deixe o campo vazio e clique em “Reiniciar”."
 V35_NO_PAIRING_CODE = (
-    "Falta o código de pareamento. Gere o código em Perfil › Conexões, no Cropilot, e cole em “Código de "
+    "Falta o código de pareamento. Gere o código em Dispositivos › Conexões, no Cropilot, e cole em “Código de "
     "pareamento”, na aba Configuração."
 )
 # The device map could not be read; the report goes on with the last good map, or with no device keys.
@@ -62,16 +63,16 @@ NO_SUPERVISOR_TOKEN = (
 )
 TOKEN_WRITE_FAILED = (
     "Não foi possível guardar o pareamento neste Home Assistant: {error}. O conector segue funcionando, mas "
-    "depois de reiniciar vai precisar de um código novo, que você gera em Perfil › Conexões, no Cropilot."
+    "depois de reiniciar vai precisar de um código novo, que você gera em Dispositivos › Conexões, no Cropilot."
 )
 PAIR_STOPPED = "O Cropilot recusou o pareamento: {detail}. Mande a aba Registro à equipe do Cropilot."
 ENDPOINT_FAILED = "Falha ao falar com o Cropilot ({endpoint}): {detail}. Nova tentativa em {seconds} s."
 HA_READ_FAILED = "Falha ao ler o Home Assistant em {path}: {detail}."
 FIRST_REPORT = (
-    "Primeiro relatório aceito: {sent} aparelhos e sensores enviados, {allowed} liberados no Cropilot."
+    "Primeiro relatório aceito: {sent} aparelhos e sensores enviados, {allowed} em uso no Cropilot."
 )
 REPORT_TRIMMED = "Relatório reduzido pelo limite de tamanho: {count} aparelhos e sensores ficaram de fora."
-REPORT_REFUSED = "Relatório recusado pelo Cropilot: {detail}. O próximo vai só com os aparelhos liberados."
+REPORT_REFUSED = "Relatório recusado pelo Cropilot: {detail}. O próximo vai só com os aparelhos que o Cropilot usa."
 TOO_MANY_COMMANDS = "A busca trouxe {count} comandos; só os 5 primeiros foram tratados."
 INVALID_COMMAND_ID = "Comando sem identificador válido: ignorado."
 DUPLICATE_COMMAND = "Comando {id} já tratado nesta execução: ignorado."
@@ -84,6 +85,9 @@ RESULT_NOT_SENT = "Resultado do comando {id} não enviado: {detail}."
 BATCH_DROPPED = "{count} comandos do lote ficaram sem execução depois da espera do resultado."
 UNEXPECTED_ERROR = "Erro inesperado ({where}): {error}."
 PUMP_EVENTS_DROPPED = "Limite de 20 eventos de bomba guardados: {count} eventos mais antigos descartados."
+SENSOR_REFRESH_FAILED = (
+    "Falha ao atualizar {count} sensores no Home Assistant: {detail}. Nova tentativa em 10 minutos."
+)
 
 TECHNICAL = (
     STARTED,
@@ -107,4 +111,5 @@ TECHNICAL = (
     BATCH_DROPPED,
     UNEXPECTED_ERROR,
     PUMP_EVENTS_DROPPED,
+    SENSOR_REFRESH_FAILED,
 )

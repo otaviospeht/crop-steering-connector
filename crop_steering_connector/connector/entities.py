@@ -38,6 +38,8 @@ NUMBER_ATTRIBUTES = ("min", "max", "step", "mode")
 MAX_REPORT_BYTES = 61440
 MAX_REPORT_ENTITIES = 200
 MAX_AGE_SECONDS = 2_592_000
+# Beside every `climate`, the sensors the refresh (refresh.py) asks HA to write again.
+REFRESHED_SENSOR_CLASSES = frozenset({"temperature", "humidity"})
 # The first dropped when the report must shrink; the allowlisted entities go only when nothing else is left.
 DROP_ORDER = ("number", "switch", "sensor", "humidifier", "climate")
 
@@ -70,13 +72,49 @@ def _instant(value: Any) -> float | None:
     return moment.timestamp()
 
 
-def age_seconds(state: dict, now: float) -> int | None:
+def _clamped_age(now: float, moment: float) -> int:
+    return int(min(MAX_AGE_SECONDS, max(0.0, now - moment)))
+
+
+def is_refreshed(state: Any) -> bool:
+    """A `climate`, or a temperature or humidity `sensor`, by HA's own state: the kinds the refresh may ask for."""
+    if not isinstance(state, dict):
+        return False
+    entity_id = state.get("entity_id")
+    if not isinstance(entity_id, str) or not ENTITY_ID_RE.fullmatch(entity_id):
+        return False
+    domain = _domain(entity_id)
+    if domain == "climate":
+        return True
+    if domain != "sensor":
+        return False
+    attributes = state.get("attributes")
+    device_class = attributes.get("device_class") if isinstance(attributes, dict) else None
+    return isinstance(device_class, str) and device_class in REFRESHED_SENSOR_CLASSES
+
+
+def written_age_seconds(state: dict, now: float) -> int | None:
     """Seconds since HA last wrote this state (`last_reported`, both on the VM clock), or None without it."""
     for key in ("last_reported", "last_updated", "last_changed"):
         moment = _instant(state.get(key))
         if moment is not None:
-            return int(min(MAX_AGE_SECONDS, max(0.0, now - moment)))
+            return _clamped_age(now, moment)
     return None
+
+
+def value_age_seconds(state: dict, now: float) -> int | None:
+    """Seconds since the value of a refreshed kind last changed, or None for another kind or without the time.
+
+    Some integrations answer `update_entity` by writing their cached value again, which moves `last_reported` and
+    keeps a dead sensor fresh. The report sends this age beside the written one so the app can flag a value that has
+    not changed; the reading itself keeps its written age and is never dropped for it. `last_updated`, not
+    `last_changed`: a climate's reading is an attribute (`current_temperature`), and only `last_updated` moves with
+    an attribute; `last_changed` follows the hvac mode alone.
+    """
+    if not is_refreshed(state):
+        return None
+    changed = _instant(state.get("last_updated"))
+    return None if changed is None else _clamped_age(now, changed)
 
 
 def report_entity(state: Any, now: float, devices: Mapping[str, str | None] | None = None) -> dict | None:
@@ -102,12 +140,15 @@ def report_entity(state: Any, now: float, devices: Mapping[str, str | None] | No
     value = state.get("state")
     if not isinstance(value, str):
         return None
-    age = age_seconds(state, now)
+    age = written_age_seconds(state, now)
     if age is None:
         return None
     kept = KEPT_ATTRIBUTES + NUMBER_ATTRIBUTES if domain == "number" else KEPT_ATTRIBUTES
     attributes = {key: raw_attributes[key] for key in kept if key in raw_attributes and _json_safe(raw_attributes[key])}
     entity: dict = {"entity_id": entity_id, "state": value, "age_seconds": age}
+    value_age = value_age_seconds(state, now)
+    if value_age is not None:
+        entity["value_age_seconds"] = value_age
     if devices is not None and entity_id in devices:
         entity["device_id"] = devices[entity_id]
     entity["attributes"] = attributes

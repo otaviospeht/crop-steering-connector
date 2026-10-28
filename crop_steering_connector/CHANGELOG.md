@@ -1,5 +1,21 @@
 # Mudanças
 
+## 0.2.3
+
+- A cada 10 minutos, o conector pede ao Home Assistant uma leitura nova dos sensores de temperatura e umidade e dos
+  aparelhos de clima que o Cropilot usa. Assim, a leitura de um sensor que fica um tempo com o mesmo valor continua
+  valendo no Cropilot. O pedido só atualiza a leitura e não muda nenhum aparelho.
+- O conector também diz ao Cropilot há quanto tempo cada um desses valores não muda. Assim, o Cropilot mostra quando
+  um valor fica igual por muito tempo, sem deixar de usar a leitura.
+
+## 0.2.2
+
+- O código de pareamento agora é gerado em Dispositivos › Conexões, no Cropilot, e é ali que você desconecta o Home
+  Assistant. A documentação e as mensagens da aba Registro apontam para esse lugar. O conector funciona como antes.
+- No Cropilot, os aparelhos deste Home Assistant agora entram sozinhos: em Dispositivos, “Tirar” tira um aparelho, e
+  “Liberar” o traz de volta. Uma tomada só recebe comando quando tem função num espaço. A documentação explica essa
+  regra, e as mensagens da aba Registro agora falam dos aparelhos que o Cropilot usa.
+
 ## 0.2.1
 
 - O conector nunca grava o pulso da bomba de rega: quem grava é você, na tomada, pelo app Smart Life, e o Cropilot só

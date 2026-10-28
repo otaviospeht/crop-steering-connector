@@ -1,7 +1,7 @@
 # Conector do Crop Steering
 
 O Conector do Crop Steering liga este Home Assistant ao Cropilot. Com ele, o Cropilot lê os sensores de temperatura e
-umidade e comanda o ar-condicionado, o desumidificador e as tomadas que você liberar no Cropilot.
+umidade e comanda o ar-condicionado, o desumidificador e as tomadas com função num espaço.
 
 ## O que ele faz e o que não faz
 
@@ -11,8 +11,16 @@ umidade e comanda o ar-condicionado, o desumidificador e as tomadas que você li
 - Ele manda ao Cropilot só os sensores de temperatura, umidade, potência e energia, os aparelhos de clima (como o
   ar-condicionado), os umidificadores, os desumidificadores e as tomadas deste Home Assistant, com o nome de cada
   aparelho. Fechaduras, alarmes, câmeras e o resto ficam de fora.
-- Ele só comanda o que você liberar no Cropilot. O ar-condicionado, o desumidificador e as tomadas que o Home
-  Assistant mostra no aparelho deles seguem a proteção de 10 minutos do Cropilot.
+- A cada 10 minutos, ele pede ao Home Assistant uma leitura nova dos sensores de temperatura e umidade e dos aparelhos
+  de clima que o Cropilot usa. Muitos aparelhos só mandam um valor quando ele muda, e sem esse pedido um valor que
+  fica igual por um tempo deixaria de valer no Cropilot. O pedido só atualiza a leitura: não liga, não desliga e não
+  muda nenhum aparelho. Ele também diz ao Cropilot há quanto tempo cada um desses valores não muda. Assim, o Cropilot
+  mostra quando um valor fica igual por muito tempo, sem deixar de usar a leitura.
+- Os aparelhos que o Cropilot sabe usar entram sozinhos em Dispositivos, no Cropilot. Lá, “Tirar” tira um aparelho
+  da lista, e o Cropilot para de ler e de comandar esse aparelho. “Liberar” traz o aparelho de volta.
+- O Cropilot só comanda uma tomada que tem função num espaço: luz, exaustor, bomba de rega ou desumidificador. Sem
+  função, ele só lê o estado dela, a não ser para desligar a bomba por segurança. O ar-condicionado, o desumidificador
+  e a tomada escolhida como desumidificador do espaço seguem a proteção de 10 minutos do Cropilot.
 - No desumidificador que aceita umidade programada, o Cropilot muda essa umidade em vez de ligar e desligar o aparelho.
 - O exaustor entra numa tomada só para conferir os pulsos que você programa no timer de ciclo dela, no app Smart Life:
   o Cropilot nunca liga nem desliga o exaustor sozinho. A bomba de rega entra só pela rega automática, com o pulso
@@ -21,7 +29,8 @@ umidade e comanda o ar-condicionado, o desumidificador e as tomadas que você li
 - O Cropilot não guarda a senha do Smart Life nem a de nenhuma conta dos seus aparelhos: as contas ficam
   só neste Home Assistant.
 - Ele não precisa de nenhum serviço pago.
-- Use um Home Assistant só do cultivo: uma tomada liberada pode ser ligada e desligada pelo Cropilot.
+- Use um Home Assistant só do cultivo: os aparelhos dele entram sozinhos no Cropilot, e uma tomada com função num
+  espaço pode ser ligada e desligada pelo Cropilot.
 - Para o Cropilot ler e comandar os aparelhos, o computador precisa ficar ligado e com internet, e o conector,
   iniciado.
 
@@ -33,7 +42,7 @@ umidade e comanda o ar-condicionado, o desumidificador e as tomadas que você li
 
 ## Parear com o Cropilot
 
-1. No Cropilot, em Perfil › Conexões, clique em “Gerar código”. O código aparece uma vez, vale 15 minutos e serve
+1. No Cropilot, em Dispositivos › Conexões, clique em “Gerar código”. O código aparece uma vez, vale 15 minutos e serve
    para um pareamento só.
 2. Na aba Configuração, cole o código em “Código de pareamento”.
 3. Clique em “Salvar”.
@@ -44,12 +53,13 @@ Depois do pareamento, o código não é mais usado e pode ficar no campo.
 
 ## Tomadas
 
-A tomada que o Home Assistant mostra no aparelho de um ar-condicionado ou de um desumidificador liga e desliga com a
-proteção de 10 minutos e não pode ser a bomba de rega, a luz nem o exaustor do espaço. Um desumidificador simples
-ligado numa tomada inteligente entra pela tomada: escolhida como o desumidificador do espaço, ela liga e desliga com a
-proteção de 10 minutos enquanto estiver nessa função. Não escolha essa tomada como luz nem como bomba de rega. Qualquer
-outra tomada liberada liga e desliga como uma tomada simples, sem essa proteção. Um ar-condicionado ligado numa tomada
-inteligente aparece como uma tomada simples: não libere essa tomada no Cropilot.
+A tomada que o Home Assistant mostra no aparelho de um ar-condicionado ou de um desumidificador não pode ser a luz, o
+exaustor, a bomba de rega nem o desumidificador do espaço: o Cropilot só lê o estado dela e comanda o próprio
+aparelho. Um desumidificador simples ligado numa tomada inteligente entra pela tomada: escolhida como o
+desumidificador do espaço, ela liga e desliga com a proteção de 10 minutos enquanto estiver nessa função. Não escolha
+essa tomada como luz nem como bomba de rega. Na luz, no exaustor e na bomba de rega, a tomada liga e desliga como uma
+tomada simples, sem essa proteção. Um ar-condicionado ligado numa tomada inteligente aparece como uma tomada simples:
+não ponha essa tomada em nenhuma função de um espaço.
 
 ## Bomba de rega
 
@@ -67,26 +77,26 @@ bomba.
 - Não passe o código de pareamento para ninguém: quem tiver o código liga outro Home Assistant à sua conta.
 - O pareamento fica guardado só neste Home Assistant, e a aba Registro nunca mostra o código nem o pareamento.
 - As cópias de segurança do Home Assistant não levam o pareamento. Depois de restaurar uma cópia, gere um código novo
-  em Perfil › Conexões, no Cropilot, cole em “Código de pareamento”, clique em “Salvar” e depois em “Reiniciar”.
+  em Dispositivos › Conexões, no Cropilot, cole em “Código de pareamento”, clique em “Salvar” e depois em “Reiniciar”.
 - Se este computador ou este Home Assistant passar para outra pessoa, desconecte o Home Assistant em
-  Perfil › Conexões, no Cropilot.
+  Dispositivos › Conexões, no Cropilot.
 
 ## Mensagens da aba Registro
 
 - **Aguardando o Home Assistant terminar de iniciar.** O Home Assistant ainda está iniciando. Não precisa fazer nada:
   o conector continua sozinho.
 - **Pareado com o Cropilot.** Tudo certo: o conector passa a mandar os aparelhos ao Cropilot e a receber os comandos.
-- **Falta o código de pareamento. Gere o código em Perfil › Conexões, no Cropilot, e cole em “Código de pareamento”,
-  na aba Configuração.** Depois de colar, clique em “Salvar” e depois em “Reiniciar”.
-- **Código de pareamento vencido ou já usado. Gere um código novo em Perfil › Conexões, no Cropilot, e cole em
+- **Falta o código de pareamento. Gere o código em Dispositivos › Conexões, no Cropilot, e cole em “Código de
+  pareamento”, na aba Configuração.** Depois de colar, clique em “Salvar” e depois em “Reiniciar”.
+- **Código de pareamento vencido ou já usado. Gere um código novo em Dispositivos › Conexões, no Cropilot, e cole em
   “Código de pareamento”.** Cole o código novo no lugar do antigo, clique em “Salvar” e depois em “Reiniciar”.
-- **Pareamento revogado. Gere um código novo em Perfil › Conexões, no Cropilot, e cole em “Código de pareamento”.**
-  O pareamento foi desfeito no Cropilot, e as leituras e os comandos pararam. Com o código novo, clique em “Salvar” e
-  depois em “Reiniciar”.
+- **Pareamento revogado. Gere um código novo em Dispositivos › Conexões, no Cropilot, e cole em “Código de
+  pareamento”.** O pareamento foi desfeito no Cropilot, e as leituras e os comandos pararam. Com o código novo,
+  clique em “Salvar” e depois em “Reiniciar”.
 - **A conta no Cropilot não está liberada para o conector. Fale com a equipe do Cropilot.** O conector tenta de novo
   sozinho, de tempos em tempos.
-- **O relatório passou do tamanho aceito pelo Cropilot. O próximo vai só com os aparelhos liberados.** Não precisa
-  fazer nada. Se a mensagem voltar, avise a equipe do Cropilot.
+- **O relatório passou do tamanho aceito pelo Cropilot. O próximo vai só com os aparelhos que o Cropilot usa.** Não
+  precisa fazer nada. Se a mensagem voltar, avise a equipe do Cropilot.
 - **Não foi possível ler os nomes dos aparelhos no Home Assistant. O relatório segue com os nomes das entidades.** Não
   precisa fazer nada: o conector tenta de novo sozinho. Se a mensagem se repetir, avise a equipe do Cropilot.
 - Outras linhas trazem números e códigos para a equipe do Cropilot. Se uma delas se repetir, mande a aba Registro para

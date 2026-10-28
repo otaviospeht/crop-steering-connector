@@ -1,4 +1,4 @@
 configuration:
   pairing_code:
     name: "Código de pareamento"
-    description: "Cole o código gerado em Perfil › Conexões, no Cropilot. Depois do pareamento, ele não é mais usado."
+    description: "Cole o código gerado em Dispositivos › Conexões, no Cropilot. Depois do pareamento, ele não é mais usado."
