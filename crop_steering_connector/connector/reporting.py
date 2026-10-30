@@ -1,9 +1,11 @@
 """The report loop: HA states → filter → ages → trim → `POST /reports`, every 60 s ± 5 s.
 
 A 0.2.0 report also carries the pump watch's queued events, and a queued event brings the next report
-forward, at least 15 s after the last one (the server takes 4 reports a minute). It also carries each
-entity's HA device and the device names, from the device map read before /states. After the report, the
-sensor refresh (refresh.py) runs with the states the report read.
+forward, at least 15 s after the last one was sent (the server takes 4 reports a minute). It also carries each
+entity's HA device and the device names, from the device map read before /states. An answer with
+`sync_requested` (0.2.4) drops the connector's cache of HA and brings the next report forward the same way, so that
+report reads the devices, their names and the states again; at most once per 120 s.
+After the report, the sensor refresh (refresh.py) runs with the states the report read.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from .backoff import Backoff, parse_retry_after
 from .clients import describe, error_code, is_success, json_body
 from .context import Context
 from .devices import DeviceMapReader
-from .entities import build_report, report_entities
+from .entities import ClimateReadings, build_report, report_entities
 from .pump_store import PUMP_ENTITY_RE, PumpEvent, is_max_on
 from .refresh import SensorRefresher
 from .transport import Response, TransportError
@@ -25,6 +27,8 @@ REPORT_JITTER_SECONDS = 5.0
 BACKOFF_BASE_SECONDS = 10.0
 BACKOFF_CAP_SECONDS = 300.0
 EARLY_REPORT_AFTER_SECONDS = 15.0
+# A server that keeps answering `sync_requested` gets one sync per window, never a report every 15 s.
+SYNC_MIN_INTERVAL_SECONDS = 120.0
 TICK_SECONDS = 1.0
 
 
@@ -54,6 +58,7 @@ class ReportLoop:
         self._context = context
         self._backoff = Backoff(BACKOFF_BASE_SECONDS, BACKOFF_CAP_SECONDS, context.rng)
         self._devices = DeviceMapReader(context)
+        self._readings = ClimateReadings()
         self._refresher = SensorRefresher(context)
         self._restriction = 0
         self._ha_was_running = True
@@ -62,13 +67,15 @@ class ReportLoop:
         self._sent_events: list[PumpEvent] = []
         self._accepted_last = False
         self._last_at: float | None = None
+        self._posted_at: float | None = None
+        self._synced_at: float | None = None
         self._next_at = 0.0
 
     def _interval(self) -> float:
         return REPORT_INTERVAL_SECONDS + self._context.rng.uniform(-REPORT_JITTER_SECONDS, REPORT_JITTER_SECONDS)
 
     def tick(self) -> float:
-        """The runtime's round: a report when one is due, or early for a queued pump event; never more than 1 s."""
+        """The runtime's round: a report when one is due, or early for a queued pump event or a sync; at most 1 s."""
         clock = self._context.clock
         now = clock.monotonic()
         if now >= self._next_at or self._early(now):
@@ -78,15 +85,14 @@ class ReportLoop:
         return max(0.0, min(TICK_SECONDS, self._next_at - now))
 
     def _early(self, now: float) -> bool:
-        # Only after an accepted report: a backoff or a Retry-After is never cut short.
+        # Only after an accepted report: a backoff or a Retry-After is never cut short. The 15 s count from both the
+        # last round and the last POST: a slow HA read in the round before must not bring two POSTs closer.
+        if not self._accepted_last or self._last_at is None or self._posted_at is None:
+            return False
+        if min(now - self._last_at, now - self._posted_at) < EARLY_REPORT_AFTER_SECONDS:
+            return False
         watch = self._context.pump_watch
-        return (
-            watch is not None
-            and self._accepted_last
-            and self._last_at is not None
-            and now - self._last_at >= EARLY_REPORT_AFTER_SECONDS
-            and watch.events_waiting()
-        )
+        return self._devices.invalidated or (watch is not None and watch.events_waiting())
 
     def cycle(self) -> float:
         """One round; returns the seconds until the next one."""
@@ -117,7 +123,9 @@ class ReportLoop:
             context.log.warning(messages.HA_READ_FAILED.format(path="/states", detail=f"HTTP {response.status}"))
             return self._interval()
         now = context.clock.time()
-        entities = report_entities(states, now, device_map.devices if device_map is not None else None)
+        entities = report_entities(
+            states, now, device_map.devices if device_map is not None else None, self._readings.observe(states)
+        )
         envelope = {
             "connector_version": __version__,
             "ha_version": context.ha_version,
@@ -144,6 +152,7 @@ class ReportLoop:
 
     def _post(self, body: bytes, sent: int) -> float:
         context = self._context
+        self._posted_at = context.clock.monotonic()
         try:
             answer = context.server.post("/reports", context.token, body=body)
         except TransportError as error:
@@ -171,6 +180,8 @@ class ReportLoop:
             # The pumps first, so a pulse_on the new allowlist allows always finds its pump.
             watch.replace_list(_parse_pumps(entries))
         self._context.allowlist.replace(parsed)
+        if data.get("sync_requested") is True:
+            self._sync()
         self._accepted_last = True
         self._backoff.reset()
         self._restriction = 0
@@ -178,6 +189,24 @@ class ReportLoop:
             self._first_report_logged = True
             self._context.log.info(messages.FIRST_REPORT.format(sent=sent, allowed=len(parsed)))
         return self._interval()
+
+    def _sync(self) -> None:
+        """`sync_requested`: drop every cache of Home Assistant, so the next report, brought forward, reads it all
+        again; a request less than 120 s after the last one honoured changes nothing.
+
+        The device map is the only one. /config and /states are read anew for every report, and an entity's state
+        before every command; the allowlist and the pump list come with the answer that asked. Two records stand:
+        `ClimateReadings`, when each reading last changed, which HA cannot give again (dropping it would make a stuck
+        reading look fresh), and HA's answer to the command loop's own power_on, kept at most 180 s so the command
+        right after it never reads a lagging `off`.
+
+        A sync only reads: the sensor refresh keeps its own cadence, so a sync never asks HA to refresh an entity.
+        """
+        now = self._context.clock.monotonic()
+        if self._synced_at is not None and now - self._synced_at < SYNC_MIN_INTERVAL_SECONDS:
+            return
+        self._synced_at = now
+        self._devices.invalidate()
 
     def _refused(self, answer: Response) -> float:
         context = self._context

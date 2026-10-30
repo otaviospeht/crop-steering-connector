@@ -1,5 +1,13 @@
 # Mudanças
 
+## 0.2.4
+
+- Em Dispositivos, no Cropilot, “Sincronizar” faz o conector ler de novo no Home Assistant os aparelhos, os nomes
+  deles e as leituras, e mandar tudo ao Cropilot logo em seguida. Um aparelho novo ou um nome trocado chega sem
+  esperar os 10 minutos de sempre. O conector traz só o que o Home Assistant já tem.
+- No ar-condicionado, o tempo sem mudança agora conta só pela temperatura e pela umidade que ele mede. Mudar a
+  temperatura programada ou o modo não faz mais uma leitura parada parecer nova.
+
 ## 0.2.3
 
 - A cada 10 minutos, o conector pede ao Home Assistant uma leitura nova dos sensores de temperatura e umidade e dos

@@ -40,6 +40,8 @@ MAX_REPORT_ENTITIES = 200
 MAX_AGE_SECONDS = 2_592_000
 # Beside every `climate`, the sensors the refresh (refresh.py) asks HA to write again.
 REFRESHED_SENSOR_CLASSES = frozenset({"temperature", "humidity"})
+# A climate's value: the readings the server takes from it, not its target, mode or fan.
+CLIMATE_READINGS = ("current_temperature", "current_humidity")
 # The first dropped when the report must shrink; the allowlisted entities go only when nothing else is left.
 DROP_ORDER = ("number", "switch", "sensor", "humidifier", "climate")
 
@@ -102,27 +104,71 @@ def written_age_seconds(state: dict, now: float) -> int | None:
     return None
 
 
-def value_age_seconds(state: dict, now: float) -> int | None:
+def value_age_seconds(state: dict, now: float, changed_at: float | None = None) -> int | None:
     """Seconds since the value of a refreshed kind last changed, or None for another kind or without the time.
 
     Some integrations answer `update_entity` by writing their cached value again, which moves `last_reported` and
     keeps a dead sensor fresh. The report sends this age beside the written one so the app can flag a value that has
     not changed; the reading itself keeps its written age and is never dropped for it. `last_updated`, not
     `last_changed`: a climate's reading is an attribute (`current_temperature`), and only `last_updated` moves with
-    an attribute; `last_changed` follows the hvac mode alone.
+    an attribute; `last_changed` follows the hvac mode alone. A climate's `changed_at` (`ClimateReadings`) replaces
+    `last_updated`, which also moves with its target or mode; the key still needs a `last_updated`.
     """
     if not is_refreshed(state):
         return None
     changed = _instant(state.get("last_updated"))
-    return None if changed is None else _clamped_age(now, changed)
+    if changed is None:
+        return None
+    return _clamped_age(now, changed if changed_at is None else changed_at)
 
 
-def report_entity(state: Any, now: float, devices: Mapping[str, str | None] | None = None) -> dict | None:
+def _readings(state: dict) -> tuple:
+    attributes = state.get("attributes")
+    if not isinstance(attributes, dict):
+        attributes = {}
+    return tuple(attributes.get(key) for key in CLIMATE_READINGS)
+
+
+class ClimateReadings:
+    """When each climate's readings last changed, as this process saw them in /states.
+
+    HA keeps no time per attribute, and a climate's `last_updated` moves with any of them: the Cropilot's own
+    `set_temperature` made a stuck reading look fresh. At a climate's first sight, and whenever a reading differs
+    from the last /states, the change time is `last_updated`; while the readings stay equal, the earlier time stands.
+    """
+
+    def __init__(self) -> None:
+        self._seen: dict[str, tuple[tuple, float]] = {}
+
+    def observe(self, states: Iterable[Any]) -> dict[str, float]:
+        """Entity id → change time for every climate of these states with a `last_updated`; the others are forgotten."""
+        seen: dict[str, tuple[tuple, float]] = {}
+        for state in states:
+            if not is_refreshed(state) or _domain(state["entity_id"]) != "climate":
+                continue
+            entity_id = state["entity_id"]
+            updated = _instant(state.get("last_updated"))
+            if updated is None:
+                continue
+            readings = _readings(state)
+            previous = self._seen.get(entity_id)
+            same = previous is not None and previous[0] == readings
+            seen[entity_id] = (readings, min(previous[1], updated) if same else updated)
+        self._seen = seen
+        return {entity_id: changed_at for entity_id, (_, changed_at) in seen.items()}
+
+
+def report_entity(
+    state: Any,
+    now: float,
+    devices: Mapping[str, str | None] | None = None,
+    value_changed: Mapping[str, float] | None = None,
+) -> dict | None:
     """One HA state as the report sends it, or None when it does not leave the house.
 
     With a device map, an entity in it carries `device_id`, null when it has no device in HA; one absent
     from it carries no key, so the server keeps the stored id: a null there would clear a plug's compressor
-    protection until the next map read.
+    protection until the next map read. `value_changed` is `ClimateReadings.observe` of the same states.
     """
     if not isinstance(state, dict):
         return None
@@ -146,7 +192,7 @@ def report_entity(state: Any, now: float, devices: Mapping[str, str | None] | No
     kept = KEPT_ATTRIBUTES + NUMBER_ATTRIBUTES if domain == "number" else KEPT_ATTRIBUTES
     attributes = {key: raw_attributes[key] for key in kept if key in raw_attributes and _json_safe(raw_attributes[key])}
     entity: dict = {"entity_id": entity_id, "state": value, "age_seconds": age}
-    value_age = value_age_seconds(state, now)
+    value_age = value_age_seconds(state, now, value_changed.get(entity_id) if value_changed is not None else None)
     if value_age is not None:
         entity["value_age_seconds"] = value_age
     if devices is not None and entity_id in devices:
@@ -156,11 +202,14 @@ def report_entity(state: Any, now: float, devices: Mapping[str, str | None] | No
 
 
 def report_entities(
-    states: Iterable[Any], now: float, devices: Mapping[str, str | None] | None = None
+    states: Iterable[Any],
+    now: float,
+    devices: Mapping[str, str | None] | None = None,
+    value_changed: Mapping[str, float] | None = None,
 ) -> list[dict]:
     selected: dict[str, dict] = {}
     for state in states:
-        entity = report_entity(state, now, devices)
+        entity = report_entity(state, now, devices, value_changed)
         if entity is not None:
             selected[entity["entity_id"]] = entity
     return [selected[key] for key in sorted(selected)]

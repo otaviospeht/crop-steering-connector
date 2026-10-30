@@ -84,18 +84,37 @@ def parse_device_map(payload: object) -> DeviceMap | None:
 
 
 class DeviceMapReader:
-    """The last good map, read at the first report and then at most every 600 s; a failure never stops a report."""
+    """The last good map, read at the first report and then at most every 600 s; a failure never stops a report.
+
+    It is the only cache the connector keeps of what Home Assistant holds, and the one a sync drops (`invalidate`).
+    """
 
     def __init__(self, context: Context) -> None:
         self._context = context
         self._map: DeviceMap | None = None
         self._read_at: float | None = None
         self._failing = False
+        self._invalidated = False
+
+    @property
+    def invalidated(self) -> bool:
+        """True from `invalidate()` until the next `current()` reads the map."""
+        return self._invalidated
+
+    def invalidate(self) -> None:
+        """A sync: the cached map is no longer current, so the next `current()` reads it whatever its age, and the
+        600 s count restarts there.
+
+        The last good map still serves when that read fails, so a failed read never strips the report of its device
+        keys.
+        """
+        self._invalidated = True
 
     def current(self) -> DeviceMap | None:
-        """The map for this report, refreshed first when due; None until one read succeeds."""
+        """The map for this report, read first when due or invalidated; None until one read succeeds."""
         now = self._context.clock.monotonic()
-        if self._read_at is None or now - self._read_at >= DEVICE_MAP_REFRESH_SECONDS:
+        if self._invalidated or self._read_at is None or now - self._read_at >= DEVICE_MAP_REFRESH_SECONDS:
+            self._invalidated = False
             self._read_at = now
             self._refresh()
         return self._map
