@@ -4,13 +4,19 @@ A 0.2.0 report also carries the pump watch's queued events, and a queued event b
 forward, at least 15 s after the last one was sent (the server takes 4 reports a minute). It also carries each
 entity's HA device and the device names, from the device map read before /states. An answer with
 `sync_requested` (0.2.4) drops the connector's cache of HA and brings the next report forward the same way, so that
-report reads the devices, their names and the states again; at most once per 120 s.
+report reads the devices, their names and the states again; at most once per 120 s. Since 0.2.5 the answer's
+`sync_request_id` comes back as the report's `sync_ack` once the map read that sync asked for has succeeded, and an
+entity the map never saw makes the round read the map again before the report is built.
 After the report, the sensor refresh (refresh.py) runs with the states the report read.
+A 0.2.7 report also carries the humidifier watch's queued events, `humidifier_events`, in the same way as the pump's:
+the snapshot taken before /states, dropped only after a 2xx, and a queued one brings the next report forward.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from . import __version__, messages, policy
 from .backoff import Backoff, parse_retry_after
@@ -22,6 +28,10 @@ from .pump_store import PUMP_ENTITY_RE, PumpEvent, is_max_on
 from .refresh import SensorRefresher
 from .transport import Response, TransportError
 
+if TYPE_CHECKING:
+    from .humidifier_store import HumidifierEvent
+    from .humidifier_watch import HumidifierWatch
+
 REPORT_INTERVAL_SECONDS = 60.0
 REPORT_JITTER_SECONDS = 5.0
 BACKOFF_BASE_SECONDS = 10.0
@@ -29,6 +39,8 @@ BACKOFF_CAP_SECONDS = 300.0
 EARLY_REPORT_AFTER_SECONDS = 15.0
 # A server that keeps answering `sync_requested` gets one sync per window, never a report every 15 s.
 SYNC_MIN_INTERVAL_SECONDS = 120.0
+# The server's id of a sync request, echoed as it came; any other value is no id.
+SYNC_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 TICK_SECONDS = 1.0
 
 
@@ -54,8 +66,9 @@ def read_running_config(context: Context) -> dict | None:
 
 
 class ReportLoop:
-    def __init__(self, context: Context) -> None:
+    def __init__(self, context: Context, humidifier_watch: HumidifierWatch | None = None) -> None:
         self._context = context
+        self._humidifier_watch = humidifier_watch
         self._backoff = Backoff(BACKOFF_BASE_SECONDS, BACKOFF_CAP_SECONDS, context.rng)
         self._devices = DeviceMapReader(context)
         self._readings = ClimateReadings()
@@ -65,10 +78,16 @@ class ReportLoop:
         self._first_report_logged = False
         self._last_dropped = 0
         self._sent_events: list[PumpEvent] = []
+        self._sent_humidifier_events: list[HumidifierEvent] = []
         self._accepted_last = False
         self._last_at: float | None = None
         self._posted_at: float | None = None
         self._synced_at: float | None = None
+        # The id of the sync last honoured until its map read is tried, the good reads before it, and the ack to send.
+        self._sync_id: str | None = None
+        self._sync_reads = 0
+        self._ack: str | None = None
+        self._ack_sent = False
         self._next_at = 0.0
 
     def _interval(self) -> float:
@@ -92,7 +111,12 @@ class ReportLoop:
         if min(now - self._last_at, now - self._posted_at) < EARLY_REPORT_AFTER_SECONDS:
             return False
         watch = self._context.pump_watch
-        return self._devices.invalidated or (watch is not None and watch.events_waiting())
+        humidifiers = self._humidifier_watch
+        return (
+            self._devices.invalidated
+            or (watch is not None and watch.events_waiting())
+            or (humidifiers is not None and humidifiers.events_waiting())
+        )
 
     def cycle(self) -> float:
         """One round; returns the seconds until the next one."""
@@ -109,10 +133,13 @@ class ReportLoop:
             context.log.warning(messages.HA_READ_FAILED.format(path="/config", detail="unit_system"))
             return self._interval()
         device_map = self._devices.current()
+        self._settle_sync()
         # The events go out as they stood before /states is read, so an `ended` never travels beside an `on`
         # read before it; one queued during the read waits for the next report.
         watch = context.pump_watch
         self._sent_events = watch.snapshot_events() if watch is not None else []
+        humidifiers = self._humidifier_watch
+        self._sent_humidifier_events = humidifiers.snapshot_events() if humidifiers is not None else []
         try:
             response = context.ha.get("/states")
         except TransportError as error:
@@ -123,16 +150,24 @@ class ReportLoop:
             context.log.warning(messages.HA_READ_FAILED.format(path="/states", detail=f"HTTP {response.status}"))
             return self._interval()
         now = context.clock.time()
-        entities = report_entities(
-            states, now, device_map.devices if device_map is not None else None, self._readings.observe(states)
-        )
+        changed = self._readings.observe(states)
+        entities = report_entities(states, now, device_map.devices if device_map is not None else None, changed)
+        # An entity the map never saw, such as a new device's, has the map read again before the report.
+        refilled = self._devices.fill_gaps([entity["entity_id"] for entity in entities if "device_id" not in entity])
+        if refilled is not device_map and refilled is not None:
+            device_map = refilled
+            entities = report_entities(states, now, device_map.devices, changed)
         envelope = {
             "connector_version": __version__,
             "ha_version": context.ha_version,
             "sent_at": utc_now_iso(now),
             "unit_system": {"temperature": unit},
             "pump_events": [event.wire(now) for event in self._sent_events],
+            "humidifier_events": [event.wire(now) for event in self._sent_humidifier_events],
         }
+        self._ack_sent = self._ack is not None
+        if self._ack is not None:
+            envelope["sync_ack"] = self._ack
         body, sent, dropped = build_report(
             envelope,
             entities,
@@ -169,6 +204,14 @@ class ReportLoop:
             # Any 2xx took the events, whatever the body says.
             watch.drop_events(event.id for event in self._sent_events)
         self._sent_events = []
+        humidifiers = self._humidifier_watch
+        if humidifiers is not None and self._sent_humidifier_events:
+            humidifiers.drop_events(event.event_id for event in self._sent_humidifier_events)
+        self._sent_humidifier_events = []
+        if self._ack_sent:
+            # And the ack: a server that could not take it asks again past its window.
+            self._ack = None
+            self._ack_sent = False
         payload = json_body(answer)
         data = payload.get("data") if isinstance(payload, dict) else None
         entries = data.get("allowlist") if isinstance(data, dict) else None
@@ -181,7 +224,8 @@ class ReportLoop:
             watch.replace_list(_parse_pumps(entries))
         self._context.allowlist.replace(parsed)
         if data.get("sync_requested") is True:
-            self._sync()
+            request_id = data.get("sync_request_id")
+            self._sync(request_id if isinstance(request_id, str) and SYNC_REQUEST_ID_RE.fullmatch(request_id) else None)
         self._accepted_last = True
         self._backoff.reset()
         self._restriction = 0
@@ -190,9 +234,10 @@ class ReportLoop:
             self._context.log.info(messages.FIRST_REPORT.format(sent=sent, allowed=len(parsed)))
         return self._interval()
 
-    def _sync(self) -> None:
+    def _sync(self, request_id: str | None) -> None:
         """`sync_requested`: drop every cache of Home Assistant, so the next report, brought forward, reads it all
-        again; a request less than 120 s after the last one honoured changes nothing.
+        again; a request less than 120 s after the last one honoured changes nothing. With the server's
+        `sync_request_id` (a 1.4 server), the report after that read acks it (`_settle_sync`).
 
         The device map is the only one. /config and /states are read anew for every report, and an entity's state
         before every command; the allowlist and the pump list come with the answer that asked. Two records stand:
@@ -207,6 +252,18 @@ class ReportLoop:
             return
         self._synced_at = now
         self._devices.invalidate()
+        self._sync_id = request_id
+        self._sync_reads = self._devices.good_reads
+
+    def _settle_sync(self) -> None:
+        """Once the map read a sync asked for has been tried: its id becomes the ack when that read succeeded, and
+        nothing when it failed, so the server, with no ack, asks again past its 130 s window. The ack then goes
+        in every report until one gets a 2xx."""
+        if self._sync_id is None or self._devices.invalidated:
+            return
+        if self._devices.good_reads > self._sync_reads:
+            self._ack = self._sync_id
+        self._sync_id = None
 
     def _refused(self, answer: Response) -> float:
         context = self._context

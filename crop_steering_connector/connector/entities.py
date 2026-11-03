@@ -13,6 +13,9 @@ ENTITY_ID_RE = re.compile(r"^(climate|humidifier|number|sensor|switch)\.[a-z0-9_
 SENSOR_DEVICE_CLASSES = frozenset({"temperature", "humidity", "power", "energy"})
 # A plug's own pulse duration; no other `number` leaves the house.
 NUMBER_DEVICE_CLASS = "duration"
+# A battery `sensor` never leaves as an entity: its level rides on the entities of its device that already leave.
+BATTERY_DEVICE_CLASS = "battery"
+BATTERY_ATTRIBUTE = "battery_level"
 KEPT_ATTRIBUTES = (
     "friendly_name",
     "device_class",
@@ -32,9 +35,14 @@ KEPT_ATTRIBUTES = (
     "min_temp",
     "max_temp",
     "target_temp_step",
+    BATTERY_ATTRIBUTE,
 )
 # Only a `number` keeps its range: the dehumidifier's `mode` and the like stay home.
 NUMBER_ATTRIBUTES = ("min", "max", "step", "mode")
+# Only a `humidifier` keeps what it is doing now (`humidifying`, `drying`, `idle`, `off`), since 0.2.7: the server
+# stores it, and no rule reads it yet.
+HUMIDIFIER_ATTRIBUTES = ("action",)
+DOMAIN_ATTRIBUTES = {"number": NUMBER_ATTRIBUTES, "humidifier": HUMIDIFIER_ATTRIBUTES}
 MAX_REPORT_BYTES = 61440
 MAX_REPORT_ENTITIES = 200
 MAX_AGE_SECONDS = 2_592_000
@@ -189,7 +197,7 @@ def report_entity(
     age = written_age_seconds(state, now)
     if age is None:
         return None
-    kept = KEPT_ATTRIBUTES + NUMBER_ATTRIBUTES if domain == "number" else KEPT_ATTRIBUTES
+    kept = KEPT_ATTRIBUTES + DOMAIN_ATTRIBUTES.get(domain, ())
     attributes = {key: raw_attributes[key] for key in kept if key in raw_attributes and _json_safe(raw_attributes[key])}
     entity: dict = {"entity_id": entity_id, "state": value, "age_seconds": age}
     value_age = value_age_seconds(state, now, value_changed.get(entity_id) if value_changed is not None else None)
@@ -201,18 +209,64 @@ def report_entity(
     return entity
 
 
+def battery_level(state: Any) -> int | None:
+    """A battery `sensor`'s level as a whole percent, or None for another state, unit or value."""
+    if not isinstance(state, dict):
+        return None
+    entity_id = state.get("entity_id")
+    if not isinstance(entity_id, str) or not ENTITY_ID_RE.fullmatch(entity_id) or _domain(entity_id) != "sensor":
+        return None
+    attributes = state.get("attributes")
+    if not isinstance(attributes, dict) or attributes.get("device_class") != BATTERY_DEVICE_CLASS:
+        return None
+    if attributes.get("unit_of_measurement") != "%" or not isinstance(state.get("state"), str):
+        return None
+    try:
+        level = float(state["state"])
+    except ValueError:
+        return None
+    if not math.isfinite(level) or level < 0 or level > 100:
+        return None
+    return int(round(level))
+
+
+def device_batteries(states: Iterable[Any], devices: Mapping[str, str | None]) -> dict[str, int]:
+    """HA device id → the lowest level of its battery sensors; a battery sensor with no device in the map is dropped."""
+    levels: dict[str, int] = {}
+    for state in states:
+        level = battery_level(state)
+        if level is None:
+            continue
+        device_id = devices.get(state["entity_id"])
+        if isinstance(device_id, str):
+            levels[device_id] = min(level, levels.get(device_id, level))
+    return levels
+
+
 def report_entities(
     states: Iterable[Any],
     now: float,
     devices: Mapping[str, str | None] | None = None,
     value_changed: Mapping[str, float] | None = None,
 ) -> list[dict]:
+    """The entities the report sends. With a device map, an entity of a device with a battery sensor carries that
+    level in `battery_level`, unless HA already gave it a valid one: only devices that already enter take a battery."""
+    states = list(states)
     selected: dict[str, dict] = {}
     for state in states:
         entity = report_entity(state, now, devices, value_changed)
         if entity is not None:
             selected[entity["entity_id"]] = entity
+    batteries = device_batteries(states, devices) if devices is not None else {}
+    for entity_id, entity in selected.items():
+        device_id = devices.get(entity_id) if devices is not None else None
+        if isinstance(device_id, str) and device_id in batteries and not _valid_percent(entity["attributes"].get(BATTERY_ATTRIBUTE)):
+            entity["attributes"][BATTERY_ATTRIBUTE] = batteries[device_id]
     return [selected[key] for key in sorted(selected)]
+
+
+def _valid_percent(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and 0 <= value <= 100
 
 
 def _encode(body: dict) -> bytes:

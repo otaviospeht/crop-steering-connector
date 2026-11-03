@@ -1,7 +1,7 @@
 # Conector do Crop Steering
 
 O Conector do Crop Steering liga este Home Assistant ao Cropilot. Com ele, o Cropilot lê os sensores de temperatura e
-umidade e comanda o ar-condicionado, o desumidificador e as tomadas com função num espaço.
+umidade e comanda o ar-condicionado, o desumidificador, o umidificador e as tomadas com função num espaço.
 
 ## O que ele faz e o que não faz
 
@@ -10,7 +10,8 @@ umidade e comanda o ar-condicionado, o desumidificador e as tomadas com função
 - Ele não tem página: não aparece na barra lateral e não tem tela para abrir. O que ele faz aparece na aba Registro.
 - Ele manda ao Cropilot só os sensores de temperatura, umidade, potência e energia, os aparelhos de clima (como o
   ar-condicionado), os umidificadores, os desumidificadores e as tomadas deste Home Assistant, com o nome de cada
-  aparelho. Fechaduras, alarmes, câmeras e o resto ficam de fora.
+  aparelho. Fechaduras, alarmes, câmeras e o resto ficam de fora. Quando um desses aparelhos informa a bateria no
+  Home Assistant, ele manda também o nível dela, para o Cropilot avisar quando a bateria de um sensor fica fraca.
 - A cada 10 minutos, ele pede ao Home Assistant uma leitura nova dos sensores de temperatura e umidade e dos aparelhos
   de clima que o Cropilot usa. Muitos aparelhos só mandam um valor quando ele muda, e sem esse pedido um valor que
   fica igual por um tempo deixaria de valer no Cropilot. O pedido só atualiza a leitura: não liga, não desliga e não
@@ -24,8 +25,8 @@ umidade e comanda o ar-condicionado, o desumidificador e as tomadas com função
 - No desumidificador que aceita umidade programada, o Cropilot muda essa umidade em vez de ligar e desligar o aparelho.
 - O exaustor entra numa tomada só para conferir os pulsos que você programa no timer de ciclo dela, no app Smart Life:
   o Cropilot nunca liga nem desliga o exaustor sozinho. A bomba de rega entra só pela rega automática, com o pulso
-  gravado na tomada: veja “Bomba de rega”. O Cropilot não comanda umidificador: com a umidade baixa, ele mostra dicas
-  para subir a umidade à mão.
+  gravado na tomada: veja “Bomba de rega”. O umidificador entra só na função Umidificador de um espaço: veja
+  “Umidificador”.
 - O Cropilot não guarda a senha do Smart Life nem a de nenhuma conta dos seus aparelhos: as contas ficam
   só neste Home Assistant.
 - Ele não precisa de nenhum serviço pago.
@@ -69,6 +70,17 @@ bomba ficar ligada além do pulso ou ligar fora de um disparo, e o Cropilot para
 iniciar, o conector tenta desligar a bomba que encontrar ligada fora de um disparo. A conferência continua sem contato
 com o Cropilot, mas o desligamento passa pela nuvem do Smart Life: sem internet, só o pulso gravado na tomada desliga a
 bomba.
+
+## Umidificador
+
+O Cropilot liga o umidificador abaixo da umidade mínima da fase e desliga no meio da faixa, só na germinação, na
+clonagem e no vegetativo. Deixe a umidade do próprio aparelho no máximo, para quem decide ser o Cropilot. Só um
+umidificador do Home Assistant entra nessa função, e ela pede o conector 0.2.7 ou mais novo.
+
+O Conector desliga o umidificador que o Cropilot ligou quando a plataforma para de responder por 20 minutos ou quando
+a conexão é revogada. Ele também desliga esse umidificador quando é pareado de novo, e avisa o Cropilot de cada
+desligamento. Um umidificador que você liga no Home Assistant ou no próprio aparelho fica como está. Com um
+umidificador do Smart Life, o desligamento passa pela nuvem do Smart Life: sem internet, ele pode não desligar.
 
 ## Segurança
 

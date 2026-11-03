@@ -1,9 +1,10 @@
-"""Start step, pairing and the two loop threads, after the pump watch.
+"""Start step, pairing and the two loop threads, after the pump watch and the humidifier watch.
 
 Idle until a restart: a stop line (a revoked pairing, a refused pairing code, a refused server address or a
 missing code) leaves the process running with no loop and no Cropilot call, because the Supervisor's watchdog
-restarts an app that exits and would repeat the line in a loop. The pump watch starts first, from the pump file,
-and keeps running through all of them.
+restarts an app that exits and would repeat the line in a loop. The pump watch and the humidifier watch start
+first, from their files, and keep running through all of them. The halt of a stop line turns every humidifier the
+Cropilot turned on off at once, and so does a new pairing, before the first claim.
 """
 
 from __future__ import annotations
@@ -20,11 +21,12 @@ from .backoff import Backoff, parse_retry_after
 from .clients import Halted, HomeAssistantClient, ServerClient, describe, error_code, is_success, json_body
 from .commands import CommandLoop
 from .context import Clock, Context
+from .humidifier_watch import HumidifierWatch
 from .pump import PumpWatch
 from .reporting import BACKOFF_BASE_SECONDS, BACKOFF_CAP_SECONDS, ReportLoop, read_running_config, utc_now_iso
 from .settings import is_connector_token, load_options, pairing_code_state, resolve_server_url
 from .token_store import TokenStore
-from .transport import Response, Transport, TransportError
+from .transport import AnsweredTransport, Response, Transport, TransportError
 
 RUNNING_POLL_SECONDS = 10.0
 UNEXPECTED_ERROR_DELAY_SECONDS = 30.0
@@ -51,9 +53,10 @@ class Connector:
         self._log = log or logging.getLogger("crop_steering_connector")
         self.context: Context | None = None
         self.pump_watch: PumpWatch | None = None
+        self.humidifier_watch: HumidifierWatch | None = None
 
     def run(self) -> None:
-        """Start the pump watch, then start and run both loops until the connector halts; returns when it is idle."""
+        """Start both watches, then start and run both loops until the connector halts; returns when it is idle."""
         if self._supervisor_token:
             # Before the options, the token, the pairing and any Cropilot call.
             self.pump_watch = PumpWatch(
@@ -64,11 +67,21 @@ class Connector:
                 log=self._log,
             )
             self.pump_watch.start()
+            self.humidifier_watch = HumidifierWatch(
+                data_dir=self._data_dir,
+                transport=self._transport,
+                supervisor_token=self._supervisor_token,
+                clock=self._clock,
+                log=self._log,
+            )
+            self.humidifier_watch.start()
+            self.humidifier_watch.follow_halt(self.halt)
         context = self.start()
         if context is None:
             return
+        report = ReportLoop(context, humidifier_watch=self.humidifier_watch)
         threads = [
-            threading.Thread(target=self._loop, args=("relatório", ReportLoop(context).tick), daemon=True),
+            threading.Thread(target=self._loop, args=("relatório", report.tick), daemon=True),
             threading.Thread(target=self._loop, args=("comandos", self._command_cycle(context)), daemon=True),
         ]
         for thread in threads:
@@ -94,8 +107,11 @@ class Connector:
                 return self._idle(messages.V33_PAIRING_CODE_REFUSED)
         if not self._supervisor_token:
             return self._idle(messages.NO_SUPERVISOR_TOKEN)
+        server_transport: Transport = self._transport
+        if self.humidifier_watch is not None:
+            server_transport = AnsweredTransport(self._transport, self.humidifier_watch.server_answered)
         context = Context(
-            server=ServerClient(self._transport, server_url, self.run_id, self.halt),
+            server=ServerClient(server_transport, server_url, self.run_id, self.halt),
             ha=HomeAssistantClient(self._transport, self._supervisor_token, self.halt),
             token_store=token_store,
             clock=self._clock,
@@ -152,6 +168,9 @@ class Connector:
                     if token is not None:
                         self._store(context, token)
                         context.log.info(messages.V16_PAIRED)
+                        if self.humidifier_watch is not None:
+                            # A new pairing: what the old one turned on goes off before the first claim.
+                            self.humidifier_watch.paired()
                         return token
                     detail = "resposta inválida"
                 else:
@@ -181,7 +200,7 @@ class Connector:
             context.log.error(messages.TOKEN_WRITE_FAILED.format(error=type(error).__name__))
 
     def _command_cycle(self, context: Context) -> Callable[[], float]:
-        loop = CommandLoop(context)
+        loop = CommandLoop(context, humidifier_watch=self.humidifier_watch)
         waiting = {"allowlist": True}
 
         def cycle() -> float:

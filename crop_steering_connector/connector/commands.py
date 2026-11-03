@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from typing import TYPE_CHECKING
 
 from . import messages, policy
 from .actions import (
@@ -22,6 +23,9 @@ from .context import Context
 from .reporting import utc_now_iso
 from .transport import CONNECT, Response, TransportError
 
+if TYPE_CHECKING:
+    from .humidifier_watch import HumidifierWatch
+
 CLAIM_INTERVAL_SECONDS = 10.0
 CLAIM_JITTER_SECONDS = 2.0
 MAX_COMMANDS_PER_CLAIM = 5
@@ -36,6 +40,8 @@ UNAVAILABLE_STATES = frozenset({"unavailable", "unknown"})
 # A target change on these can power the unit on: it is refused while the state reads `off`, and after a
 # power_on it waits for the state to leave `off`. The dehumidifier is here for its programmed humidity.
 POWERED_DOMAINS = frozenset({"climate", "humidifier"})
+# The humidifier watch (0.2.7) follows only a `humidifier` entity of this class that the Cropilot turned on.
+HUMIDIFIER_DEVICE_CLASS = "humidifier"
 
 
 class Refused(Exception):
@@ -47,8 +53,9 @@ class Refused(Exception):
 
 
 class CommandLoop:
-    def __init__(self, context: Context) -> None:
+    def __init__(self, context: Context, humidifier_watch: HumidifierWatch | None = None) -> None:
         self._context = context
+        self._humidifier_watch = humidifier_watch
         self._claim_backoff = Backoff(*ENDPOINT_BACKOFF, context.rng)
         self._start_backoff = Backoff(*ENDPOINT_BACKOFF, context.rng)
         self._start_not_before = 0.0
@@ -107,7 +114,7 @@ class CommandLoop:
         if wait > 0 and context.sleep(wait):
             return False
         try:
-            spec, body = self._checks(command)
+            spec, body, state = self._checks(command)
         except Refused as refusal:
             context.log.warning(
                 messages.COMMAND_REFUSED.format(
@@ -130,6 +137,7 @@ class CommandLoop:
                 watch.pulse_failed(command.entity_id, command.id)
         if outcome == "succeeded" and command.domain in POWERED_DOMAINS and command.action == "power_on":
             self._power_on_marks[command.entity_id] = (context.clock.monotonic(), changed.get(command.entity_id))
+        self._follow_humidifier(command, state, outcome, code)
         context.log.info(
             messages.COMMAND_DONE.format(
                 id=command.id,
@@ -146,8 +154,9 @@ class CommandLoop:
         while len(self._handled_order) > HANDLED_IDS_KEPT:
             self._handled.discard(self._handled_order.popleft())
 
-    def _checks(self, command: Command) -> tuple[ServiceSpec, dict]:
-        """The refusals before the start, in order; returns the service and its body when the command may start."""
+    def _checks(self, command: Command) -> tuple[ServiceSpec, dict, dict]:
+        """The refusals before the start, in order; returns the service, its body and the live state read for them
+        when the command may start."""
         context = self._context
         deadline = deadline_of(command)
         if deadline is None:
@@ -175,7 +184,22 @@ class CommandLoop:
             raise Refused("would_power_on")
         if context.clock.monotonic() >= deadline:
             raise Refused("expired")
-        return spec, body
+        return spec, body, state
+
+    def _follow_humidifier(self, command: Command, state: dict, outcome: str, code: str | None) -> None:
+        """Hand a humidifier's power to the watch: a `power_on` that reached HA enters it, a `power_off` that
+        succeeded leaves it. A call HA may have run without answering (`ha_error`) also enters: the watch drops it
+        at its first `off` read, so the doubt fails closed."""
+        watch = self._humidifier_watch
+        if watch is None or command.domain != "humidifier":
+            return
+        if command.action == "power_off" and outcome == "succeeded":
+            watch.turned_off(command.entity_id)
+            return
+        attributes = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
+        reached = outcome == "succeeded" or code == "ha_error"
+        if command.action == "power_on" and reached and attributes.get("device_class") == HUMIDIFIER_DEVICE_CLASS:
+            watch.turned_on(command.entity_id, command.id)
 
     def _live_state(self, entity_id: str) -> dict:
         """HA's state of the entity, after the wait that follows a power_on that succeeded."""

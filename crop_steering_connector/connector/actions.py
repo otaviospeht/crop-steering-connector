@@ -12,7 +12,9 @@ A pump's `pulse_on` carries `max_on_seconds` for the pump watch only: a connecto
 here and never copied into the HA body.
 A dehumidifier's `set_humidity` is `humidifier.set_humidity` with an integer `humidity` that must sit
 in the entity's live `min_humidity` and `max_humidity` and, when it reports `target_humidity_step`, on that step
-from the minimum. It runs only on a `device_class` of `dehumidifier`: the platform never commands a humidifier.
+from the minimum. It runs only on a `device_class` of `dehumidifier`: a humidifier is only turned on and off.
+Since 0.2.7 the platform commands a humidifier (`device_class: humidifier`) with `power_on` and `power_off`, and the
+humidifier watch (humidifier_watch.py) turns off the one it turned on when the platform stops answering.
 The table has no `number` action: the pulse a plug holds is only read, so no server answer can make the connector
 write it.
 """

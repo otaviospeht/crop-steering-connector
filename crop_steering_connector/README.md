@@ -1,7 +1,7 @@
 # Conector do Crop Steering
 
 Liga este Home Assistant ao Cropilot. Com ele, o Cropilot lê os sensores de temperatura e umidade e comanda o
-ar-condicionado, o desumidificador e as tomadas com função num espaço.
+ar-condicionado, o desumidificador, o umidificador e as tomadas com função num espaço.
 
 Ele só abre conexões de saída, com HTTPS, até o Cropilot, e não abre nenhuma porta no computador nem na sua rede.
 A cada 10 minutos, ele pede ao Home Assistant uma leitura nova dos sensores que o Cropilot usa, para a leitura de um

@@ -7,7 +7,7 @@ import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Mapping, Protocol
+from typing import Callable, Mapping, Protocol
 
 CONNECT = "connect"
 RESPONSE = "response"
@@ -47,6 +47,32 @@ class Transport(Protocol):
         timeout: float,
         max_bytes: int,
     ) -> Response: ...
+
+
+class AnsweredTransport:
+    """A transport that tells `on_success` of every 2xx it returns; the Cropilot client's only, never HA's.
+
+    The humidifier watch (0.2.7) counts its 20 minutes of silence from the last of them, so a 3xx, a 4xx, a 5xx, a
+    timeout or no network never moves it.
+    """
+
+    def __init__(self, inner: Transport, on_success: Callable[[], None]) -> None:
+        self._inner = inner
+        self._on_success = on_success
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        body: bytes | None,
+        timeout: float,
+        max_bytes: int,
+    ) -> Response:
+        response = self._inner.request(method, url, headers, body, timeout, max_bytes)
+        if 200 <= response.status < 300:
+            self._on_success()
+        return response
 
 
 class _RefuseRedirects(urllib.request.HTTPRedirectHandler):

@@ -1,5 +1,28 @@
 # Mudanças
 
+## 0.2.7
+
+- O Cropilot pode ligar e desligar o umidificador do espaço, só na germinação, na clonagem e no vegetativo. Para
+  usar o umidificador no Cropilot, o conector precisa estar nesta versão ou numa mais nova.
+- O Conector desliga o umidificador que o Cropilot ligou quando a plataforma para de responder por 20 minutos ou
+  quando a conexão é revogada. Ele também desliga esse umidificador quando é pareado de novo, e avisa o Cropilot de
+  cada desligamento.
+- O conector manda ao Cropilot o que o umidificador está fazendo, como umidificar ou parado, quando o Home Assistant
+  tem essa informação.
+
+## 0.2.6
+
+- O conector manda ao Cropilot o nível da bateria dos aparelhos que já entram, quando o Home Assistant tem essa
+  informação, como no sensor de temperatura e umidade à pilha. Em Dispositivos, o Cropilot mostra esse nível e avisa
+  quando a bateria de um sensor do espaço fica fraca. O sensor de bateria em si não vira um aparelho no Cropilot.
+
+## 0.2.5
+
+- Um aparelho novo no Home Assistant, como um sensor de temperatura e umidade, chega ao Cropilot como um aparelho só e
+  com o nome dele desde o primeiro envio do conector, em vez de aparecer em Dispositivos com uma linha para cada leitura.
+- Depois de “Sincronizar”, em Dispositivos, o conector confirma ao Cropilot que leu de novo os aparelhos no Home
+  Assistant. Se essa leitura falhar, o Cropilot pede outra vez sozinho.
+
 ## 0.2.4
 
 - Em Dispositivos, no Cropilot, “Sincronizar” faz o conector ler de novo no Home Assistant os aparelhos, os nomes

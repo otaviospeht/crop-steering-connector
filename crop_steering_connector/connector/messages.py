@@ -1,6 +1,6 @@
 """Every line the connector writes to the app's Log tab.
 
-The lines of `APPROVED` and `PUMP_APPROVED` are approved texts, kept verbatim, and DOCS.md explains each line
+The lines of `APPROVED`, `PUMP_APPROVED` and `HUMIDIFIER_APPROVED` are approved texts, kept verbatim, and DOCS.md explains each line
 of `APPROVED`. The other lines carry only codes, counts and entity ids for the Cropilot team; they never carry
 a token, the pairing code, a payload or a device name.
 """
@@ -56,6 +56,27 @@ PUMP_APPROVED = (
     PUMP_FILE_UNREADABLE,
 )
 
+# The humidifier watch. `{entity}` is the humidifier's entity id.
+HUMIDIFIER_STOP_OFF = (
+    "O pareamento com o Cropilot terminou. O conector desligou o umidificador {entity}, que o Cropilot tinha ligado."
+)
+HUMIDIFIER_PAIR_OFF = "O conector foi pareado de novo e desligou o umidificador {entity}, que o Cropilot tinha ligado."
+HUMIDIFIER_SILENCE_OFF = (
+    "O Cropilot não responde há 20 minutos. O conector desligou o umidificador {entity}, que o Cropilot tinha ligado."
+)
+HUMIDIFIER_OFF_RETRY = "O umidificador {entity} não desligou. O conector tenta de novo em {seconds} s."
+HUMIDIFIER_FILE_UNREADABLE = (
+    "A lista dos umidificadores que o Cropilot ligou não pôde ser lida. O conector começa com a lista vazia."
+)
+
+HUMIDIFIER_APPROVED = (
+    HUMIDIFIER_STOP_OFF,
+    HUMIDIFIER_PAIR_OFF,
+    HUMIDIFIER_SILENCE_OFF,
+    HUMIDIFIER_OFF_RETRY,
+    HUMIDIFIER_FILE_UNREADABLE,
+)
+
 STARTED = "Conector do Crop Steering {version} iniciado."
 NO_SUPERVISOR_TOKEN = (
     "O conector não recebeu o acesso ao Home Assistant (SUPERVISOR_TOKEN ausente). Clique em “Reiniciar”; "
@@ -85,6 +106,13 @@ RESULT_NOT_SENT = "Resultado do comando {id} não enviado: {detail}."
 BATCH_DROPPED = "{count} comandos do lote ficaram sem execução depois da espera do resultado."
 UNEXPECTED_ERROR = "Erro inesperado ({where}): {error}."
 PUMP_EVENTS_DROPPED = "Limite de 20 eventos de bomba guardados: {count} eventos mais antigos descartados."
+HUMIDIFIER_EVENTS_DROPPED = (
+    "Limite de 20 eventos de umidificador guardados: {count} eventos mais antigos descartados."
+)
+HUMIDIFIER_GONE = "O umidificador {entity} não existe mais no Home Assistant. O conector deixou de vigiá-lo."
+HUMIDIFIER_WATCHED_DROPPED = (
+    "Limite de 200 umidificadores vigiados: {count} umidificadores mais antigos deixaram de ser vigiados."
+)
 SENSOR_REFRESH_FAILED = (
     "Falha ao atualizar {count} sensores no Home Assistant: {detail}. Nova tentativa em 10 minutos."
 )
@@ -111,5 +139,8 @@ TECHNICAL = (
     BATCH_DROPPED,
     UNEXPECTED_ERROR,
     PUMP_EVENTS_DROPPED,
+    HUMIDIFIER_EVENTS_DROPPED,
+    HUMIDIFIER_GONE,
+    HUMIDIFIER_WATCHED_DROPPED,
     SENSOR_REFRESH_FAILED,
 )
