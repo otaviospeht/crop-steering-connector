@@ -79,8 +79,10 @@ umidificador do Home Assistant entra nessa função, e ela pede o conector 0.2.7
 
 O Conector desliga o umidificador que o Cropilot ligou quando a plataforma para de responder por 20 minutos ou quando
 a conexão é revogada. Ele também desliga esse umidificador quando é pareado de novo, e avisa o Cropilot de cada
-desligamento. Um umidificador que você liga no Home Assistant ou no próprio aparelho fica como está. Com um
-umidificador do Smart Life, o desligamento passa pela nuvem do Smart Life: sem internet, ele pode não desligar.
+desligamento; o aviso do desligamento na revogação só chega no próximo pareamento. A exclusão da conta vale como
+revogação: o Conector desliga o umidificador, e, com o Home Assistant fora do ar, é você quem precisa desligá-lo à mão.
+Um umidificador que você liga no Home Assistant ou no próprio aparelho fica como está. Com um umidificador do Smart
+Life, o desligamento passa pela nuvem do Smart Life: sem internet, ele pode não desligar.
 
 ## Segurança
 
@@ -103,8 +105,8 @@ umidificador do Smart Life, o desligamento passa pela nuvem do Smart Life: sem i
 - **Código de pareamento vencido ou já usado. Gere um código novo em Dispositivos › Conexões, no Cropilot, e cole em
   “Código de pareamento”.** Cole o código novo no lugar do antigo, clique em “Salvar” e depois em “Reiniciar”.
 - **Pareamento revogado. Gere um código novo em Dispositivos › Conexões, no Cropilot, e cole em “Código de
-  pareamento”.** O pareamento foi desfeito no Cropilot, e as leituras e os comandos pararam. Com o código novo,
-  clique em “Salvar” e depois em “Reiniciar”.
+  pareamento”.** O pareamento foi desfeito no Cropilot, e as leituras e os comandos pararam. A exclusão da conta também
+  desfaz o pareamento. Com o código novo, clique em “Salvar” e depois em “Reiniciar”.
 - **A conta no Cropilot não está liberada para o conector. Fale com a equipe do Cropilot.** O conector tenta de novo
   sozinho, de tempos em tempos.
 - **O relatório passou do tamanho aceito pelo Cropilot. O próximo vai só com os aparelhos que o Cropilot usa.** Não

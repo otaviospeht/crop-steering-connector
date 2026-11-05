@@ -1,5 +1,10 @@
 # Mudanças
 
+## 0.2.8
+
+- O umidificador que o Cropilot manda ligar no mesmo instante em que a conexão é revogada desliga na hora, como os
+  outros, em vez de ficar ligado até os 20 minutos sem resposta da plataforma.
+
 ## 0.2.7
 
 - O Cropilot pode ligar e desligar o umidificador do espaço, só na germinação, na clonagem e no vegetativo. Para

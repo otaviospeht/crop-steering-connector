@@ -9,9 +9,10 @@ person turns on is never watched.
 
 Every watched humidifier is turned off on a stop line (a 401 on any endpoint, a refused pairing: the connector's
 halt), on a new pairing (before the first claim) and after 20 minutes with no 2xx answer from any Cropilot endpoint.
-Like the pump watch it runs in its own daemon thread with its own HA client and never calls the Cropilot; its only
-HA service is `humidifier.turn_off`, only on a watched entity. The watched set, the silence timer and the events live
-in the humidifier file, so a restart resumes from it before any Cropilot call.
+A `power_on` still in flight when the connector halts enters with the stop line's off already on it. Like the pump
+watch it runs in its own daemon thread with its own HA client and never calls the Cropilot; its only HA service is
+`humidifier.turn_off`, only on a watched entity. The watched set, the silence timer and the events live in the
+humidifier file, so a restart resumes from it before any Cropilot call.
 """
 
 from __future__ import annotations
@@ -111,6 +112,7 @@ class HumidifierWatch:
         self._wake = threading.Event()
         self._preempt = threading.Event()
         self._retired = threading.Event()
+        self._halt: threading.Event | None = None
         self._thread: threading.Thread | None = None
         self._halt_thread: threading.Thread | None = None
         self._tries: dict[str, _Try] = {}
@@ -145,6 +147,7 @@ class HumidifierWatch:
 
     def follow_halt(self, halt: threading.Event) -> None:
         """Turn every watched humidifier off the moment the connector halts on a stop line."""
+        self._halt = halt
 
         def follow() -> None:
             while not self._retired.is_set():
@@ -189,8 +192,13 @@ class HumidifierWatch:
             return
         with self._lock:
             # A command that reached HA passed the Cropilot's start just now: an off still under way from an
-            # earlier pairing or silence no longer applies to it.
-            self._watched[entity_id] = Watched(since=self._clock.time(), command_id=command_id)
+            # earlier pairing or silence no longer applies to it. A halt does: its one trigger may have run while
+            # this call was in flight, and no Cropilot power_off comes after it, so this on goes off at once. The
+            # lock orders this with that trigger: a halt read as clear here means the trigger marks this entry.
+            halted = self._halt is not None and self._halt.is_set()
+            self._watched[entity_id] = Watched(
+                since=self._clock.time(), command_id=command_id, cut="stop_off" if halted else None
+            )
             self._tries.pop(entity_id, None)
             self._missing.pop(entity_id, None)
             self._persist()
@@ -378,7 +386,10 @@ class HumidifierWatch:
             return None
         attempt = self._tries.get(entity_id)
         if state == "off":
-            if item.cut is None and self._clock.time() - item.since < ON_GRACE_SECONDS:
+            # Also with an off under way: leaving on HA's lag would drop a humidifier that is about to read on. An
+            # on in the future is a wall clock set back, which must not hold back that off's event.
+            elapsed = self._clock.time() - item.since
+            if elapsed < ON_GRACE_SECONDS and (item.cut is None or elapsed >= 0):
                 return None
             self._leave(entity_id, item, attempt)
             return None
