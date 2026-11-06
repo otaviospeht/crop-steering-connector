@@ -110,6 +110,9 @@ HUMIDIFIER_EVENTS_DROPPED = (
     "Limite de 20 eventos de umidificador guardados: {count} eventos mais antigos descartados."
 )
 HUMIDIFIER_GONE = "O umidificador {entity} não existe mais no Home Assistant. O conector deixou de vigiá-lo."
+HUMIDIFIER_OFF_UNCONFIRMED = (
+    "O Home Assistant não confirmou o desligamento do umidificador {entity}. O conector tenta de novo em {seconds} s."
+)
 HUMIDIFIER_WATCHED_DROPPED = (
     "Limite de 200 umidificadores vigiados: {count} umidificadores mais antigos deixaram de ser vigiados."
 )
@@ -141,6 +144,7 @@ TECHNICAL = (
     PUMP_EVENTS_DROPPED,
     HUMIDIFIER_EVENTS_DROPPED,
     HUMIDIFIER_GONE,
+    HUMIDIFIER_OFF_UNCONFIRMED,
     HUMIDIFIER_WATCHED_DROPPED,
     SENSOR_REFRESH_FAILED,
 )

@@ -188,8 +188,8 @@ class CommandLoop:
 
     def _follow_humidifier(self, command: Command, state: dict, outcome: str, code: str | None) -> None:
         """Hand a humidifier's power to the watch: a `power_on` that reached HA enters it, a `power_off` that
-        succeeded leaves it. A call HA may have run without answering (`ha_error`) also enters: the watch drops it
-        at its first `off` read, so the doubt fails closed."""
+        succeeded leaves it. A call HA may have run without answering (`ha_error`) also enters, so the doubt fails
+        closed: when it never reads `on`, the watch drops it 15 minutes after the call."""
         watch = self._humidifier_watch
         if watch is None or command.domain != "humidifier":
             return

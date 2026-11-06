@@ -3,9 +3,12 @@ answering.
 
 A humidifier enters when a Cropilot `power_on` on a `humidifier` entity with `device_class: humidifier` reaches
 Home Assistant: the connector cannot tell the round from the platform's manual toggle, and turning off a
-humidifier the platform switched on fails closed. It leaves when a Cropilot `power_off` on it succeeds, when the
-watch reads it `off`, when the watch's own off succeeds, or when HA no longer has the entity. A humidifier the
-person turns on is never watched.
+humidifier the platform switched on fails closed. It leaves when a Cropilot `power_off` on it succeeds, when a read
+of `off` follows the watch's own off answered with a 2xx, or when HA no longer has the entity. With no off under way
+a read of `off` also takes it out, silently: 30 s after the `power_on` once a read showed it `on`, and 15 minutes
+after it when none ever did, because a slow humidifier reads `off` long after the call. A humidifier the person
+turns on is never watched, with one exception: inside those 900 s an entry never read `on` is still watched, so the
+person's `on` reads as the Cropilot's and the humidifier stays in.
 
 Every watched humidifier is turned off on a stop line (a 401 on any endpoint, a refused pairing: the connector's
 halt), on a new pairing (before the first claim) and after 20 minutes with no 2xx answer from any Cropilot endpoint.
@@ -43,6 +46,9 @@ SILENCE_SECONDS = 1200.0
 LAST_OK_WRITE_STEP_SECONDS = 60.0
 # A read of `off` this soon after the power_on is HA lagging behind its own call, not the person's off.
 ON_GRACE_SECONDS = 30.0
+# A humidifier never read `on` waits this long for it: above the 10-minute round, whose `power_on` renews `since`,
+# and below the 20 minutes of silence, so such an entry leaves by itself before the silence's off.
+NEVER_ON_SECONDS = 900.0
 POLL_HOT_SECONDS = 1.0
 POLL_IDLE_SECONDS = 5.0
 RETRY_FAST_SECONDS = 5.0
@@ -67,12 +73,15 @@ CLOSING_LINES = {
 
 @dataclass
 class _Try:
-    """The retry schedule of one off in memory (5 s for a minute, then 60 s); a restart starts it over."""
+    """The retry schedule of one off in memory (5 s for a minute, then 60 s); a restart starts it over.
+
+    `tried_at` is written before the call, so it proves nothing alone; `answered` says HA gave the last try a 2xx."""
 
     tries: int = 0
     first_try_at: float | None = None
     next_try_at: float | None = None
-    tried_at: float | None = None
+    tried_at: float = 0.0
+    answered: bool = False
     awaiting_check: bool = False
     off_failed_sent: bool = False
 
@@ -354,10 +363,17 @@ class HumidifierWatch:
                 # A Cropilot power_on or power_off came after the decision: that command wins, and no off is sent.
                 return
         try:
-            self._ha.post("/services/humidifier/turn_off", {"entity_id": entity_id})
+            response = self._ha.post("/services/humidifier/turn_off", {"entity_id": entity_id})
         except TransportError:
-            # The next read finds it still on, and the retry follows.
+            # Not answered: the next read finds the try unanswered, and the retry follows.
             return
+        if not 200 <= response.status < 300:
+            return
+        with self._lock:
+            item = self._watched.get(entity_id)
+            attempt = self._tries.get(entity_id)
+            if item is not None and attempt is not None and (item.command_id, item.cut) == decided:
+                attempt.answered = True
 
     # The rule, under the lock
 
@@ -384,21 +400,31 @@ class HumidifierWatch:
         item = self._watched.get(entity_id)
         if item is None:
             return None
+        if state == "on" and not item.seen_on:
+            item = replace(item, seen_on=True)
+            self._watched[entity_id] = item
+            self._persist()
         attempt = self._tries.get(entity_id)
         if state == "off":
-            # Also with an off under way: leaving on HA's lag would drop a humidifier that is about to read on. An
-            # on in the future is a wall clock set back, which must not hold back that off's event.
+            # Also with an off under way: acting on HA's lag would drop a humidifier that is about to read on. An
+            # on in the future is a wall clock set back, which must not hold back that off.
             elapsed = self._clock.time() - item.since
-            if elapsed < ON_GRACE_SECONDS and (item.cut is None or elapsed >= 0):
+            wait = NEVER_ON_SECONDS if item.cut is None and not item.seen_on else ON_GRACE_SECONDS
+            if elapsed < wait and (item.cut is None or elapsed >= 0):
                 return None
-            self._leave(entity_id, item, attempt)
-            return None
+            if item.cut is None:
+                self._forget(entity_id)
+                self._persist()
+                return None
+            if attempt is not None and attempt.answered:
+                self._leave(entity_id, item, attempt)
+                return None
         if item.cut is None:
             return None
         attempt = self._tries.setdefault(entity_id, _Try())
         now = self._clock.monotonic()
         if attempt.awaiting_check:
-            # The read after a try is still not off: that try failed.
+            # The read after a try is neither off nor backed by a 2xx: that try failed.
             attempt.awaiting_check = False
             if attempt.tries >= OFF_FAILED_AFTER_TRIES and not attempt.off_failed_sent:
                 attempt.off_failed_sent = True
@@ -406,26 +432,22 @@ class HumidifierWatch:
             elapsed = now - (attempt.first_try_at if attempt.first_try_at is not None else now)
             interval = RETRY_FAST_SECONDS if elapsed < RETRY_FAST_FOR_SECONDS else RETRY_SLOW_SECONDS
             attempt.next_try_at = now + interval
-            self._log.warning(messages.HUMIDIFIER_OFF_RETRY.format(entity=entity_id, seconds=round(interval)))
+            line = messages.HUMIDIFIER_OFF_UNCONFIRMED if state == "off" else messages.HUMIDIFIER_OFF_RETRY
+            self._log.warning(line.format(entity=entity_id, seconds=round(interval)))
             return None
         if attempt.next_try_at is not None and now < attempt.next_try_at:
             return None
         attempt.tries += 1
         attempt.first_try_at = now if attempt.first_try_at is None else attempt.first_try_at
         attempt.tried_at = self._clock.time()
+        attempt.answered = False
         attempt.awaiting_check = True
         return item.command_id, item.cut
 
-    def _leave(self, entity_id: str, item: Watched, attempt: _Try | None) -> None:
-        """It reads off. With an off under way that off is reported, at its last try or, when this process has not
-        tried yet (a restart, or an off read first), now: a counted off on a humidifier that is off fails closed.
-        Without one it was someone else's off, which is not reported."""
+    def _leave(self, entity_id: str, item: Watched, attempt: _Try) -> None:
+        """It reads off after a try HA answered with a 2xx: that off is reported, at that try."""
         self._forget(entity_id)
-        if item.cut is None:
-            self._persist()
-            return
-        tried_at = attempt.tried_at if attempt is not None else None
-        self._queue(entity_id, item.cut, tried_at if tried_at is not None else self._clock.time())
+        self._queue(entity_id, item.cut, attempt.tried_at)
         self._log.warning(CLOSING_LINES[item.cut].format(entity=entity_id))
 
     def _queue(self, entity_id: str, kind: str, ended_at: float) -> None:

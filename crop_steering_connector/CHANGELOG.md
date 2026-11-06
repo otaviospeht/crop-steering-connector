@@ -1,5 +1,12 @@
 # Mudanças
 
+## 0.2.9
+
+- O umidificador que demora a ligar continua sob os cuidados do Conector: ele não solta mais o aparelho só porque o Home
+  Assistant ainda o mostra desligado logo depois do comando do Cropilot.
+- O Conector só avisa que desligou o umidificador depois que o Home Assistant aceita o pedido. Se o Home Assistant não
+  aceitar, ele tenta de novo e, na terceira vez, avisa o Cropilot da falha.
+
 ## 0.2.8
 
 - O umidificador que o Cropilot manda ligar no mesmo instante em que a conexão é revogada desliga na hora, como os

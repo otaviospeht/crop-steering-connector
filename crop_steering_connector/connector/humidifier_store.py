@@ -38,11 +38,13 @@ class InvalidHumidifierFile(ValueError):
 
 @dataclass(frozen=True)
 class Watched:
-    """A humidifier a Cropilot `power_on` turned on: when, by which command, and the off it waits for (or None)."""
+    """A humidifier a Cropilot `power_on` turned on: when, by which command, the off it waits for (or None) and
+    whether a read of this `power_on` has already shown it `on`. A file of 0.2.8 has no `seen_on`: read as False."""
 
     since: float
     command_id: str
     cut: str | None = None
+    seen_on: bool = False
 
 
 @dataclass(frozen=True)
@@ -87,11 +89,12 @@ def _watched(raw: Any) -> dict[str, Watched]:
     watched: dict[str, Watched] = {}
     for entity_id, item in raw.items():
         _require(_is_entity(entity_id) and isinstance(item, dict), "watched entity")
-        command_id, cut = item.get("command_id"), item.get("cut")
+        command_id, cut, seen_on = item.get("command_id"), item.get("cut"), item.get("seen_on", False)
         _require(_is_instant(item.get("since")), "watched since")
         _require(isinstance(command_id, str) and COMMAND_ID_RE.fullmatch(command_id) is not None, "watched command_id")
         _require(cut is None or cut in OFF_KINDS, "watched cut")
-        watched[entity_id] = Watched(since=float(item["since"]), command_id=command_id, cut=cut)
+        _require(isinstance(seen_on, bool), "watched seen_on")
+        watched[entity_id] = Watched(since=float(item["since"]), command_id=command_id, cut=cut, seen_on=seen_on)
     return watched
 
 
@@ -124,7 +127,7 @@ def serialize(content: HumidifierFile) -> dict:
     return {
         "version": FILE_VERSION,
         "watched": {
-            entity_id: {"since": item.since, "command_id": item.command_id, "cut": item.cut}
+            entity_id: {"since": item.since, "command_id": item.command_id, "cut": item.cut, "seen_on": item.seen_on}
             for entity_id, item in content.watched.items()
         },
         "last_ok_at": content.last_ok_at,
