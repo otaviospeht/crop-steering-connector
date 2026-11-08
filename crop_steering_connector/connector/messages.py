@@ -1,8 +1,8 @@
 """Every line the connector writes to the app's Log tab.
 
-The lines of `APPROVED`, `PUMP_APPROVED` and `HUMIDIFIER_APPROVED` are approved texts, kept verbatim, and DOCS.md explains each line
-of `APPROVED`. The other lines carry only codes, counts and entity ids for the Cropilot team; they never carry
-a token, the pairing code, a payload or a device name.
+The lines of `APPROVED`, `PUMP_APPROVED`, `HUMIDIFIER_APPROVED` and `LIGHT_APPROVED` are approved texts, kept
+verbatim, and DOCS.md explains each line of `APPROVED`. The other lines carry only codes, counts and entity ids for
+the Cropilot team; they never carry a token, the pairing code, a payload or a device name.
 """
 
 V13_REVOKED = (
@@ -77,6 +77,74 @@ HUMIDIFIER_APPROVED = (
     HUMIDIFIER_FILE_UNREADABLE,
 )
 
+# The light controller. `{entity}` is the light plug's entity id, `{verb}` «acender» or «apagar» and `{data}` the
+# end of the schedule kept, in UTC.
+LIGHT_ON = "O conector acendeu a iluminação {entity} no horário da fase."
+LIGHT_OFF = "O conector apagou a iluminação {entity} no horário da fase."
+LIGHT_NIGHT_OFF = "A iluminação {entity} estava acesa no período de noite. O conector a apagou."
+LIGHT_FAILED = (
+    "O conector não conseguiu {verb} a iluminação {entity} depois de 3 tentativas. Ele continua tentando até o "
+    "próximo horário."
+)
+LIGHT_EXPIRED = (
+    "O conector ficou 7 dias sem contato com o Cropilot e parou de acender e apagar a iluminação {entity}. Ela fica "
+    "como está."
+)
+LIGHT_STOPPED = (
+    "O conector parou de acender e apagar a iluminação, porque não fala mais com o Cropilot por este pareamento. "
+    "Ligue o timer da tomada no app Smart Life."
+)
+LIGHT_SCHEDULE_INVALID = (
+    "Os horários da iluminação {entity} que chegaram do Cropilot vieram com erro. O conector segue os últimos "
+    "horários válidos até {data}."
+)
+LIGHT_SCHEDULE_INVALID_NONE_HELD = (
+    "Horários da iluminação inválidos e nenhum horário guardado: a iluminação fica como está."
+)
+LIGHT_REFUSED_PLUG = (
+    "A tomada {entity} é de um ar-condicionado, de um desumidificador ou da bomba de rega, e o conector não a usa "
+    "como iluminação."
+)
+LIGHT_DEVICE_UNKNOWN = (
+    "O conector ainda não sabe de que aparelho do Home Assistant é a tomada {entity} e espera a próxima leitura dos "
+    "aparelhos para usá-la como iluminação."
+)
+LIGHT_DEVICE_MISMATCH = (
+    "Os horários da iluminação {entity} chegaram para outro aparelho do Home Assistant, e o conector não os usa."
+)
+LIGHT_DEVICE_CHANGED = (
+    "A entidade {entity} agora é de outro aparelho no Home Assistant, e o conector não a usa mais como iluminação."
+)
+LIGHT_CLOCK_SKEW = (
+    "O relógio do Home Assistant está mais de 5 minutos diferente da hora do Cropilot. O conector não acende nem "
+    "apaga a iluminação até isso se acertar."
+)
+LIGHT_CLOCK_BACK = (
+    "O relógio voltou mais de 5 minutos. O conector só acende a iluminação no próximo horário de acender."
+)
+LIGHT_CAPPED = (
+    "O conector parou de mandar comandos à iluminação {entity} até o próximo horário, depois de muitas tentativas em "
+    "uma hora."
+)
+
+LIGHT_APPROVED = (
+    LIGHT_ON,
+    LIGHT_OFF,
+    LIGHT_NIGHT_OFF,
+    LIGHT_FAILED,
+    LIGHT_EXPIRED,
+    LIGHT_STOPPED,
+    LIGHT_SCHEDULE_INVALID,
+    LIGHT_SCHEDULE_INVALID_NONE_HELD,
+    LIGHT_REFUSED_PLUG,
+    LIGHT_DEVICE_UNKNOWN,
+    LIGHT_DEVICE_MISMATCH,
+    LIGHT_DEVICE_CHANGED,
+    LIGHT_CLOCK_SKEW,
+    LIGHT_CLOCK_BACK,
+    LIGHT_CAPPED,
+)
+
 STARTED = "Conector do Crop Steering {version} iniciado."
 NO_SUPERVISOR_TOKEN = (
     "O conector não recebeu o acesso ao Home Assistant (SUPERVISOR_TOKEN ausente). Clique em “Reiniciar”; "
@@ -119,6 +187,20 @@ HUMIDIFIER_WATCHED_DROPPED = (
 SENSOR_REFRESH_FAILED = (
     "Falha ao atualizar {count} sensores no Home Assistant: {detail}. Nova tentativa em 10 minutos."
 )
+# Once per process, at the first failed identity read; `{detail}` is a transport kind, an HTTP status or a fixed word.
+DEVICE_IDENTITIES_FAILED = (
+    "Falha ao ler as integrações dos aparelhos no Home Assistant: {detail}. O conector tenta de novo na próxima "
+    "leitura dos aparelhos."
+)
+LIGHT_FILE_UNREADABLE = (
+    "Os horários da iluminação guardados não puderam ser lidos. O conector espera os próximos horários do Cropilot."
+)
+LIGHT_EVENTS_DROPPED = "Limite de 20 eventos da iluminação guardados: {count} eventos mais antigos descartados."
+# After the night guard's third off in one dark period.
+LIGHT_NIGHT_GUARD_DONE = (
+    "O conector já apagou a iluminação {entity} 3 vezes neste período de noite e não a apaga mais até o próximo "
+    "horário de acender."
+)
 
 TECHNICAL = (
     STARTED,
@@ -147,4 +229,8 @@ TECHNICAL = (
     HUMIDIFIER_OFF_UNCONFIRMED,
     HUMIDIFIER_WATCHED_DROPPED,
     SENSOR_REFRESH_FAILED,
+    DEVICE_IDENTITIES_FAILED,
+    LIGHT_FILE_UNREADABLE,
+    LIGHT_EVENTS_DROPPED,
+    LIGHT_NIGHT_GUARD_DONE,
 )

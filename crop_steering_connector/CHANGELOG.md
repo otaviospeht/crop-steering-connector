@@ -1,5 +1,20 @@
 # Mudanças
 
+## 0.2.10
+
+- O Cropilot pode acender e apagar a iluminação do espaço nos horários da fase, sem o timer da tomada. Você liga isso
+  no espaço, no Cropilot, e desliga o timer da tomada no app Smart Life. O Conector guarda os horários e segue com eles
+  por até 7 dias se perder o contato com o Cropilot. A tomada Smart Life só recebe o comando pela internet: sem
+  internet ou com o Home Assistant desligado, a iluminação fica como está até eles voltarem.
+- Se o Home Assistant for reinstalado do zero, sem backup, o Cropilot passa a reconhecer os aparelhos compatíveis com
+  Smart Life que você já usava, mesmo quando o Home Assistant dá a eles um identificador novo. Assim, a função de cada
+  aparelho no espaço pode passar sozinha para ele.
+- Para isso, o Conector manda ao Cropilot, para cada aparelho, o nome das integrações do Home Assistant em que ele está
+  e um código embaralhado de cada uma, feito a partir do código que a integração dá ao aparelho. O Cropilot não guarda
+  esses códigos: usa só o dos aparelhos compatíveis com Smart Life, embaralhado de novo, e descarta os outros na hora.
+- Isso só funciona para os aparelhos que o Conector já leu nesta versão antes da reinstalação: vale atualizar antes de
+  qualquer reinstalação.
+
 ## 0.2.9
 
 - O umidificador que demora a ligar continua sob os cuidados do Conector: ele não solta mais o aparelho só porque o Home

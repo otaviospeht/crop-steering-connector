@@ -6,7 +6,7 @@ import json
 import math
 import re
 from datetime import datetime
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 ENTITY_ID_RE = re.compile(r"^(climate|humidifier|number|sensor|switch)\.[a-z0-9_]{1,200}$")
 # The plug meters leave beside the climate sensors; current, voltage and the rest stay home.
@@ -45,6 +45,8 @@ HUMIDIFIER_ATTRIBUTES = ("action",)
 DOMAIN_ATTRIBUTES = {"number": NUMBER_ATTRIBUTES, "humidifier": HUMIDIFIER_ATTRIBUTES}
 MAX_REPORT_BYTES = 61440
 MAX_REPORT_ENTITIES = 200
+# The identifier pairs of `device_identities` in one report, counted over the devices kept.
+MAX_IDENTITY_PAIRS = 200
 MAX_AGE_SECONDS = 2_592_000
 # Beside every `climate`, the sensors the refresh (refresh.py) asks HA to write again.
 REFRESHED_SENSOR_CLASSES = frozenset({"temperature", "humidity"})
@@ -278,16 +280,46 @@ def _drop_rank(entity_id: str, allowlisted: bool) -> tuple:
     return (allowlisted, DROP_ORDER.index(_domain(entity_id)), tuple(-ord(char) for char in entity_id))
 
 
-def _body(envelope: dict, entities: list[dict], devices: dict[str, str] | None) -> dict:
+def _body(
+    envelope: dict,
+    entities: list[dict],
+    devices: dict[str, str] | None,
+    identities: dict[str, list[list[str]]] | None = None,
+) -> dict:
     body = {**envelope, "entities": entities}
     if devices is not None:
         body["devices"] = devices
+    if identities is not None:
+        body["device_identities"] = identities
     return body
 
 
 def _named_device(entity: dict, device_names: Mapping[str, str]) -> str | None:
     device_id = entity.get("device_id")
     return device_id if isinstance(device_id, str) and device_id in device_names else None
+
+
+def _fit_identities(
+    sent: list[dict], identities: Mapping[str, Sequence[tuple[str, str]]], room: int
+) -> dict[str, list[list[str]]]:
+    """The `device_identities` of the devices of the entities sent, in order of first appearance, within the pair cap
+    and the `room` bytes the entities and the devices left; whole entries leave, the most pairs first, ties by id."""
+    entries: dict[str, list[list[str]]] = {}
+    for entity in sent:
+        device_id = entity.get("device_id")
+        if isinstance(device_id, str) and identities.get(device_id) and device_id not in entries:
+            entries[device_id] = [list(pair) for pair in identities[device_id]]
+    # `"<id>":[…]`, the encoded one-entry object without its braces.
+    sizes = {device_id: len(_encode({device_id: pairs})) - 2 for device_id, pairs in entries.items()}
+    pairs = sum(len(items) for items in entries.values())
+    used = sum(sizes.values()) + max(0, len(entries) - 1)
+    for device_id in sorted(entries, key=lambda item: (-len(entries[item]), item)):
+        if pairs <= MAX_IDENTITY_PAIRS and used <= room:
+            break
+        pairs -= len(entries[device_id])
+        used -= sizes[device_id] + (1 if len(entries) > 1 else 0)
+        del entries[device_id]
+    return entries
 
 
 def build_report(
@@ -298,13 +330,16 @@ def build_report(
     max_bytes: int = MAX_REPORT_BYTES,
     max_entities: int = MAX_REPORT_ENTITIES,
     device_names: Mapping[str, str] | None = None,
+    device_identities: Mapping[str, Sequence[tuple[str, str]]] | None = None,
 ) -> tuple[bytes, int, int]:
     """Encode the report within the limits; returns (body, entities sent, entities left out).
 
     `restriction` 0 sends everything that fits; 1 only the allowlisted entities (after a 413); every step
     above halves the allowlisted entities again. With `device_names` (a device map was read) the
     body carries `devices`, right after `entities`: each named device of the entities sent, once. A device's
-    entry counts while one kept entity points to it and leaves with the last one.
+    entry counts while one kept entity points to it and leaves with the last one. Then `device_identities`, right
+    after `devices`: the entries of `device_identities` for the devices of the entities sent, named or not, which
+    take only the bytes the entities and the devices left, so an entity never leaves for an identity.
     """
     candidates = list(entities)
     if restriction >= 1:
@@ -321,7 +356,8 @@ def build_report(
             holders[device_id] = holders.get(device_id, 0) + 1
     # `"<id>":"<name>"`, the encoded one-entry object without its braces.
     device_sizes = {device_id: len(_encode({device_id: names[device_id]})) - 2 for device_id in holders}
-    base = len(_encode(_body(envelope, [], {} if device_names is not None else None)))
+    mapped = device_names is not None
+    base = len(_encode(_body(envelope, [], {} if mapped else None, {} if mapped else None)))
     kept = {entity["entity_id"] for entity in candidates}
     total = base + sum(sizes.values()) + max(0, len(kept) - 1)
     total += sum(device_sizes.values()) + max(0, len(holders) - 1)
@@ -338,13 +374,15 @@ def build_report(
                 total -= device_sizes[device_id] + (1 if holders else 0)
     sent = [entity for entity in candidates if entity["entity_id"] in kept]
     devices = None
-    if device_names is not None:
+    identities = None
+    if mapped:
         devices = {}
         for entity in sent:
             device_id = device_of[entity["entity_id"]]
             if device_id is not None and device_id not in devices:
                 devices[device_id] = names[device_id]
-    body = _encode(_body(envelope, sent, devices))
+        identities = _fit_identities(sent, device_identities or {}, max_bytes - total)
+    body = _encode(_body(envelope, sent, devices, identities))
     if len(body) > max_bytes:
         raise ValueError("report envelope does not fit the size limit")
     return body, len(sent), len(entities) - len(sent)

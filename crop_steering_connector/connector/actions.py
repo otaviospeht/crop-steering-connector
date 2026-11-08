@@ -17,6 +17,10 @@ Since 0.2.7 the platform commands a humidifier (`device_class: humidifier`) with
 humidifier watch (humidifier_watch.py) turns off the one it turned on when the platform stops answering.
 The table has no `number` action: the pulse a plug holds is only read, so no server answer can make the connector
 write it.
+Since 0.2.10 the light controller (light_control.py) switches a light plug at the instants of the schedule the
+Cropilot sends, with no claimed command: its own closed table, `LOCAL_LIGHT_SERVICES`, holds only `switch.turn_on`
+and `switch.turn_off`, body exactly `{entity_id}`. It is not in `ACTIONS`, so a claimed command named after it is
+still `invalid_command`, and no server answer can name another service or add a key.
 """
 
 from __future__ import annotations
@@ -68,6 +72,9 @@ ACTIONS: dict[tuple[str, str], ServiceSpec] = {
     ("switch", "power_off"): ServiceSpec("switch", "turn_off"),
     ("switch", "pulse_on"): ServiceSpec("switch", "turn_on", connector_keys=("max_on_seconds",)),
 }
+
+# The light controller's only HA services, by target state; used by light_control.py alone.
+LOCAL_LIGHT_SERVICES: dict[str, str] = {"on": "switch/turn_on", "off": "switch/turn_off"}
 
 
 class InvalidCommand(Exception):

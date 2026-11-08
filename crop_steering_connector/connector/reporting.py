@@ -10,6 +10,12 @@ entity the map never saw makes the round read the map again before the report is
 After the report, the sensor refresh (refresh.py) runs with the states the report read.
 A 0.2.7 report also carries the humidifier watch's queued events, `humidifier_events`, in the same way as the pump's:
 the snapshot taken before /states, dropped only after a 2xx, and a queued one brings the next report forward.
+A 0.2.10 report carries `device_identities` beside `devices`: each device's hashed identifier pairs, from the identity
+read that follows every good map read (devices.py); the raw ids never leave the process.
+A 0.2.10 report also carries the light controller's keys right after `humidifier_events`: `light_control`, the
+schedules it holds, always whole, and `light_events`, taken and dropped as the humidifier's, the oldest that fit
+beside it in 16384 bytes. Every accepted answer goes to the controller with its light markers, and every good map
+read with the HA device of each entity (light_control.py).
 """
 
 from __future__ import annotations
@@ -24,13 +30,17 @@ from .clients import describe, error_code, is_success, json_body
 from .context import Context
 from .devices import DeviceMapReader
 from .entities import ClimateReadings, build_report, report_entities
+from .light_control import compressor_switches, markers_of, report_keys
 from .pump_store import PUMP_ENTITY_RE, PumpEvent, is_max_on
 from .refresh import SensorRefresher
 from .transport import Response, TransportError
 
 if TYPE_CHECKING:
+    from .devices import DeviceMap
     from .humidifier_store import HumidifierEvent
     from .humidifier_watch import HumidifierWatch
+    from .light_control import LightControl
+    from .light_store import LightEvent
 
 REPORT_INTERVAL_SECONDS = 60.0
 REPORT_JITTER_SECONDS = 5.0
@@ -66,9 +76,19 @@ def read_running_config(context: Context) -> dict | None:
 
 
 class ReportLoop:
-    def __init__(self, context: Context, humidifier_watch: HumidifierWatch | None = None) -> None:
+    def __init__(
+        self,
+        context: Context,
+        humidifier_watch: HumidifierWatch | None = None,
+        light_control: LightControl | None = None,
+    ) -> None:
         self._context = context
         self._humidifier_watch = humidifier_watch
+        self._light = light_control
+        self._sent_light_events: list[LightEvent] = []
+        self._light_reads = 0
+        self._compressors: frozenset[str] = frozenset()
+        self._device_of: dict[str, str | None] | None = None
         self._backoff = Backoff(BACKOFF_BASE_SECONDS, BACKOFF_CAP_SECONDS, context.rng)
         self._devices = DeviceMapReader(context)
         self._readings = ClimateReadings()
@@ -116,6 +136,7 @@ class ReportLoop:
             self._devices.invalidated
             or (watch is not None and watch.events_waiting())
             or (humidifiers is not None and humidifiers.events_waiting())
+            or (self._light is not None and self._light.events_waiting())
         )
 
     def cycle(self) -> float:
@@ -133,6 +154,7 @@ class ReportLoop:
             context.log.warning(messages.HA_READ_FAILED.format(path="/config", detail="unit_system"))
             return self._interval()
         device_map = self._devices.current()
+        self._hand_map(device_map)
         self._settle_sync()
         # The events go out as they stood before /states is read, so an `ended` never travels beside an `on`
         # read before it; one queued during the read waits for the next report.
@@ -140,6 +162,8 @@ class ReportLoop:
         self._sent_events = watch.snapshot_events() if watch is not None else []
         humidifiers = self._humidifier_watch
         self._sent_humidifier_events = humidifiers.snapshot_events() if humidifiers is not None else []
+        light = self._light
+        self._sent_light_events = light.snapshot_events() if light is not None else []
         try:
             response = context.ha.get("/states")
         except TransportError as error:
@@ -157,6 +181,11 @@ class ReportLoop:
         if refilled is not device_map and refilled is not None:
             device_map = refilled
             entities = report_entities(states, now, device_map.devices, changed)
+            self._hand_map(device_map)
+        self._compressors = compressor_switches(states, device_map.devices if device_map is not None else None)
+        control, light_events, self._sent_light_events = report_keys(
+            light.schedules() if light is not None else [], self._sent_light_events, now
+        )
         envelope = {
             "connector_version": __version__,
             "ha_version": context.ha_version,
@@ -164,6 +193,8 @@ class ReportLoop:
             "unit_system": {"temperature": unit},
             "pump_events": [event.wire(now) for event in self._sent_events],
             "humidifier_events": [event.wire(now) for event in self._sent_humidifier_events],
+            "light_control": control,
+            "light_events": light_events,
         }
         self._ack_sent = self._ack is not None
         if self._ack is not None:
@@ -174,6 +205,7 @@ class ReportLoop:
             context.allowlist.entity_ids(),
             self._restriction,
             device_names=device_map.names if device_map is not None else None,
+            device_identities=device_map.identities if device_map is not None else None,
         )
         if self._restriction == 0 and dropped != self._last_dropped:
             self._last_dropped = dropped
@@ -208,6 +240,10 @@ class ReportLoop:
         if humidifiers is not None and self._sent_humidifier_events:
             humidifiers.drop_events(event.event_id for event in self._sent_humidifier_events)
         self._sent_humidifier_events = []
+        light = self._light
+        if light is not None and self._sent_light_events:
+            light.drop_events(event.event_id for event in self._sent_light_events)
+        self._sent_light_events = []
         if self._ack_sent:
             # And the ack: a server that could not take it asks again past its window.
             self._ack = None
@@ -223,6 +259,16 @@ class ReportLoop:
             # The pumps first, so a pulse_on the new allowlist allows always finds its pump.
             watch.replace_list(_parse_pumps(entries))
         self._context.allowlist.replace(parsed)
+        if light is not None:
+            # A light marker is checked per entity: a bad one never makes the answer invalid.
+            light.replace(
+                markers_of(entries),
+                data.get("light_control_supported") is True,
+                data.get("server_time"),
+                self._compressors,
+                [entity_id for entity_id, _ in _parse_pumps(entries)],
+                self._device_of,
+            )
         if data.get("sync_requested") is True:
             request_id = data.get("sync_request_id")
             self._sync(request_id if isinstance(request_id, str) and SYNC_REQUEST_ID_RE.fullmatch(request_id) else None)
@@ -233,6 +279,15 @@ class ReportLoop:
             self._first_report_logged = True
             self._context.log.info(messages.FIRST_REPORT.format(sent=sent, allowed=len(parsed)))
         return self._interval()
+
+    def _hand_map(self, device_map: DeviceMap | None) -> None:
+        """After each good map read, the light controller's device check reads the new map."""
+        if device_map is None or self._devices.good_reads == self._light_reads:
+            return
+        self._light_reads = self._devices.good_reads
+        self._device_of = dict(device_map.devices)
+        if self._light is not None:
+            self._light.devices(self._device_of)
 
     def _sync(self, request_id: str | None) -> None:
         """`sync_requested`: drop every cache of Home Assistant, so the next report, brought forward, reads it all

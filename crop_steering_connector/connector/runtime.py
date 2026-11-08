@@ -1,10 +1,11 @@
-"""Start step, pairing and the two loop threads, after the pump watch and the humidifier watch.
+"""Start step, pairing and the two loop threads, after the pump watch, the humidifier watch and the light controller.
 
 Idle until a restart: a stop line (a revoked pairing, a refused pairing code, a refused server address or a
 missing code) leaves the process running with no loop and no Cropilot call, because the Supervisor's watchdog
-restarts an app that exits and would repeat the line in a loop. The pump watch and the humidifier watch start
-first, from their files, and keep running through all of them. The halt of a stop line turns every humidifier the
-Cropilot turned on off at once, and so does a new pairing, before the first claim.
+restarts an app that exits and would repeat the line in a loop. The pump watch, the humidifier watch and the light
+controller start first, from their files, and keep running through all of them. The halt of a stop line turns every
+humidifier the Cropilot turned on off at once and drops every light schedule, with the lights as they are; a new
+pairing does both too, before the first claim.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from .clients import Halted, HomeAssistantClient, ServerClient, describe, error_
 from .commands import CommandLoop
 from .context import Clock, Context
 from .humidifier_watch import HumidifierWatch
+from .light_control import LightControl
 from .pump import PumpWatch
 from .reporting import BACKOFF_BASE_SECONDS, BACKOFF_CAP_SECONDS, ReportLoop, read_running_config, utc_now_iso
 from .settings import is_connector_token, load_options, pairing_code_state, resolve_server_url
@@ -54,9 +56,11 @@ class Connector:
         self.context: Context | None = None
         self.pump_watch: PumpWatch | None = None
         self.humidifier_watch: HumidifierWatch | None = None
+        self.light_control: LightControl | None = None
 
     def run(self) -> None:
-        """Start both watches, then start and run both loops until the connector halts; returns when it is idle."""
+        """Start both watches and the light controller, then start and run both loops until the connector halts;
+        returns when it is idle."""
         if self._supervisor_token:
             # Before the options, the token, the pairing and any Cropilot call.
             self.pump_watch = PumpWatch(
@@ -76,10 +80,19 @@ class Connector:
             )
             self.humidifier_watch.start()
             self.humidifier_watch.follow_halt(self.halt)
+            self.light_control = LightControl(
+                data_dir=self._data_dir,
+                transport=self._transport,
+                supervisor_token=self._supervisor_token,
+                clock=self._clock,
+                log=self._log,
+            )
+            self.light_control.start()
+            self.light_control.follow_halt(self.halt)
         context = self.start()
         if context is None:
             return
-        report = ReportLoop(context, humidifier_watch=self.humidifier_watch)
+        report = ReportLoop(context, humidifier_watch=self.humidifier_watch, light_control=self.light_control)
         threads = [
             threading.Thread(target=self._loop, args=("relatório", report.tick), daemon=True),
             threading.Thread(target=self._loop, args=("comandos", self._command_cycle(context)), daemon=True),
@@ -171,6 +184,9 @@ class Connector:
                         if self.humidifier_watch is not None:
                             # A new pairing: what the old one turned on goes off before the first claim.
                             self.humidifier_watch.paired()
+                        if self.light_control is not None:
+                            # And the old pairing's light schedules go; this one's first answer brings them back.
+                            self.light_control.paired()
                         return token
                     detail = "resposta inválida"
                 else:

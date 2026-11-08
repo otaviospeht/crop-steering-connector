@@ -12,6 +12,10 @@ umidade e comanda o ar-condicionado, o desumidificador, o umidificador e as toma
   ar-condicionado), os umidificadores, os desumidificadores e as tomadas deste Home Assistant, com o nome de cada
   aparelho. Fechaduras, alarmes, câmeras e o resto ficam de fora. Quando um desses aparelhos informa a bateria no
   Home Assistant, ele manda também o nível dela, para o Cropilot avisar quando a bateria de um sensor fica fraca.
+  Para cada aparelho, ele manda também o nome das integrações do Home Assistant em que o aparelho está e um código
+  embaralhado de cada uma, feito a partir do código que a integração dá ao aparelho, para o Cropilot reconhecer o mesmo
+  aparelho compatível com Smart Life se o Home Assistant for reinstalado. O Cropilot não guarda esses códigos: usa só o
+  dos aparelhos compatíveis com Smart Life, embaralhado de novo, e descarta os outros na hora.
 - A cada 10 minutos, ele pede ao Home Assistant uma leitura nova dos sensores de temperatura e umidade e dos aparelhos
   de clima que o Cropilot usa. Muitos aparelhos só mandam um valor quando ele muda, e sem esse pedido um valor que
   fica igual por um tempo deixaria de valer no Cropilot. O pedido só atualiza a leitura: não liga, não desliga e não
@@ -19,7 +23,7 @@ umidade e comanda o ar-condicionado, o desumidificador, o umidificador e as toma
   mostra quando um valor fica igual por muito tempo, sem deixar de usar a leitura.
 - Os aparelhos que o Cropilot sabe usar entram sozinhos em Dispositivos, no Cropilot. Lá, “Tirar” tira um aparelho
   da lista, e o Cropilot para de ler e de comandar esse aparelho. “Liberar” traz o aparelho de volta.
-- O Cropilot só comanda uma tomada que tem função num espaço: luz, exaustor, bomba de rega ou desumidificador. Sem
+- O Cropilot só comanda uma tomada que tem função num espaço: iluminação, exaustor, bomba de rega ou desumidificador. Sem
   função, ele só lê o estado dela, a não ser para desligar a bomba por segurança. O ar-condicionado, o desumidificador
   e a tomada escolhida como desumidificador do espaço seguem a proteção de 10 minutos do Cropilot.
 - No desumidificador que aceita umidade programada, o Cropilot muda essa umidade em vez de ligar e desligar o aparelho.
@@ -54,11 +58,11 @@ Depois do pareamento, o código não é mais usado e pode ficar no campo.
 
 ## Tomadas
 
-A tomada que o Home Assistant mostra no aparelho de um ar-condicionado ou de um desumidificador não pode ser a luz, o
+A tomada que o Home Assistant mostra no aparelho de um ar-condicionado ou de um desumidificador não pode ser a iluminação, o
 exaustor, a bomba de rega nem o desumidificador do espaço: o Cropilot só lê o estado dela e comanda o próprio
 aparelho. Um desumidificador simples ligado numa tomada inteligente entra pela tomada: escolhida como o
 desumidificador do espaço, ela liga e desliga com a proteção de 10 minutos enquanto estiver nessa função. Não escolha
-essa tomada como luz nem como bomba de rega. Na luz, no exaustor e na bomba de rega, a tomada liga e desliga como uma
+essa tomada como iluminação nem como bomba de rega. Na iluminação, no exaustor e na bomba de rega, a tomada liga e desliga como uma
 tomada simples, sem essa proteção. Um ar-condicionado ligado numa tomada inteligente aparece como uma tomada simples:
 não ponha essa tomada em nenhuma função de um espaço.
 
@@ -83,6 +87,15 @@ desligamento; o aviso do desligamento na revogação só chega no próximo parea
 revogação: o Conector desliga o umidificador, e, com o Home Assistant fora do ar, é você quem precisa desligá-lo à mão.
 Um umidificador que você liga no Home Assistant ou no próprio aparelho fica como está. Com um umidificador do Smart
 Life, o desligamento passa pela nuvem do Smart Life: sem internet, ele pode não desligar.
+
+## Iluminação
+
+O Cropilot pode acender e apagar a iluminação do espaço nos horários da fase, sem o timer da tomada. Você liga isso no
+espaço, no Cropilot, e desliga o timer da tomada no app Smart Life e qualquer Agenda do Home Assistant que acenda ou
+apague essa tomada. O Conector guarda os horários e segue com eles por até 7 dias se perder o contato com o Cropilot;
+depois disso, ele para e deixa a iluminação como está. A tomada Smart Life só recebe o comando pela internet: sem
+internet ou com o Home Assistant desligado, a iluminação fica como está até eles voltarem. O timer da própria tomada
+funciona sem internet.
 
 ## Segurança
 
