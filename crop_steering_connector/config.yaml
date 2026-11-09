@@ -1,5 +1,5 @@
 name: "Conector do Crop Steering"
-version: "0.2.10"
+version: "0.2.11"
 slug: "crop_steering_connector"
 description: "Liga este Home Assistant ao Cropilot, que lê os sensores de temperatura e umidade, comanda o ar-condicionado, o desumidificador, o umidificador e as tomadas com função num espaço, liga a bomba de rega nos disparos e acende e apaga a iluminação quando você liga isso no espaço."
 arch:

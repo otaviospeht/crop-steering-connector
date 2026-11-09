@@ -37,11 +37,11 @@ KEPT_ATTRIBUTES = (
     "target_temp_step",
     BATTERY_ATTRIBUTE,
 )
-# Only a `number` keeps its range: the dehumidifier's `mode` and the like stay home.
+# Only a `number` keeps its range; its `mode` is how HA draws the input (`auto`, `box`, `slider`).
 NUMBER_ATTRIBUTES = ("min", "max", "step", "mode")
-# Only a `humidifier` keeps what it is doing now (`humidifying`, `drying`, `idle`, `off`), since 0.2.7: the server
-# stores it, and no rule reads it yet.
-HUMIDIFIER_ATTRIBUTES = ("action",)
+# Only a `humidifier` keeps what it is doing now (`humidifying`, `drying`, `idle`, `off`), since 0.2.7, and its running
+# mode and the modes it offers, since 0.2.11. The server only stores them: no command writes a mode.
+HUMIDIFIER_ATTRIBUTES = ("action", "mode", "available_modes")
 DOMAIN_ATTRIBUTES = {"number": NUMBER_ATTRIBUTES, "humidifier": HUMIDIFIER_ATTRIBUTES}
 MAX_REPORT_BYTES = 61440
 MAX_REPORT_ENTITIES = 200

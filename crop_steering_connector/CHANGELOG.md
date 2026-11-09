@@ -1,5 +1,10 @@
 # Mudanças
 
+## 0.2.11
+
+- O Conector passa a mandar ao Cropilot o modo em que o desumidificador está e os modos que ele oferece, só para
+  leitura. O Cropilot não muda o modo do aparelho.
+
 ## 0.2.10
 
 - O Cropilot pode acender e apagar a iluminação do espaço nos horários da fase, sem o timer da tomada. Você liga isso
