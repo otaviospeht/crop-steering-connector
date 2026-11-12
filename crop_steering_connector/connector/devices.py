@@ -16,7 +16,7 @@ from typing import Iterable, Mapping
 from . import messages
 from .clients import json_body
 from .context import Context
-from .entities import BATTERY_DEVICE_CLASS, NUMBER_DEVICE_CLASS, SENSOR_DEVICE_CLASSES
+from .entities import BATTERY_DEVICE_CLASS, NUMBER_DEVICE_CLASS, PROBLEM_DEVICE_CLASS, RELAY_STATUS_LAST, SENSOR_DEVICE_CLASSES
 from .transport import TransportError
 
 DEVICE_MAP_REFRESH_SECONDS = 600.0
@@ -25,8 +25,9 @@ DEVICE_MAP_REFRESH_SECONDS = 600.0
 MISSING_REREAD_SECONDS = 50.0
 DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 MAX_DEVICE_NAME = 120
-# Every device class of these leaves: a switch of an AC's or a dehumidifier's own device is a compressor plug.
-ANY_CLASS_DOMAINS = ("climate", "humidifier", "switch")
+# Every device class of these leaves: a switch of an AC's or a dehumidifier's own device is a compressor plug. A valve
+# (0.2.12) may be a pump.
+ANY_CLASS_DOMAINS = ("climate", "humidifier", "switch", "valve")
 # The identity of a device: each identifier pair HA gives, (integration domain, id), leaves as the domain and the
 # SHA-256 of this prefix, the domain, "|" and the id. The prefix names the scheme version; the raw id never leaves.
 IDENTITY_PREFIX = "crop-steering:device-identity:v1|"
@@ -43,6 +44,11 @@ def _sources() -> str:
     sources = [f"(states.{domain} | list)" for domain in ANY_CLASS_DOMAINS]
     sources.append(f"(states.sensor | selectattr('attributes.device_class', 'in', {sensor_classes}) | list)")
     sources.append(f"(states.number | selectattr('attributes.device_class', 'eq', {number_class}) | list)")
+    # A problem binary sensor (0.2.12) is mapped so the report keeps only those of a humidifier's own device.
+    sources.append(f"(states.binary_sensor | selectattr('attributes.device_class', 'eq', {json.dumps(PROBLEM_DEVICE_CLASS)}) | list)")
+    # The selects that may be a plug's power-on state: with one last-state option; the report checks the rest.
+    for option in sorted(RELAY_STATUS_LAST):
+        sources.append(f"(states.select | selectattr('attributes.options', 'defined') | selectattr('attributes.options', 'contains', {json.dumps(option)}) | list)")
     return " + ".join(sources)
 
 

@@ -1,5 +1,5 @@
 """Conector do Crop Steering: the Home Assistant app that links one HA to the Cropilot."""
 
-__version__ = "0.2.11"
+__version__ = "0.2.12"
 
 USER_AGENT = f"crop-steering-connector/{__version__}"

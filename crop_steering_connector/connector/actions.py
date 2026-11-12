@@ -9,7 +9,9 @@ already at that setpoint: an LG keeps a setpoint per mode, and a mode alone woul
 the crop's limit. The temperature must sit in the entity's live range and, when it reports `target_temp_step`, on that
 step from `min_temp`.
 A pump's `pulse_on` carries `max_on_seconds` for the pump watch only: a connector key, checked
-here and never copied into the HA body.
+here and never copied into the HA body. Since 0.2.12 a pump may be a `valve`: `pulse_on` is `valve.open_valve`
+and `power_off` is `valve.close_valve`; a valve has no `power_on`. Since 0.2.12 `pulse_on` may also carry the connector
+key `dose_seconds`: the pump watch turns the pump off at the dose, and the pump's own timer is only the backup.
 A dehumidifier's `set_humidity` is `humidifier.set_humidity` with an integer `humidity` that must sit
 in the entity's live `min_humidity` and `max_humidity` and, when it reports `target_humidity_step`, on that step
 from the minimum. It runs only on a `device_class` of `dehumidifier`: a humidifier is only turned on and off.
@@ -45,6 +47,9 @@ HUMIDITY_RANGE = (0, 100)
 DEHUMIDIFIER_DEVICE_CLASS = "dehumidifier"
 # P + 15 s with the pulse P from 5 to 900 s, a flush pulse included.
 MAX_ON_SECONDS_RANGE = (20, 915)
+# The dose the watch cuts at, from 5 s up to the pump's own pulse (max_on_seconds - 15).
+DOSE_SECONDS_MIN = 5
+MAX_ON_MARGIN_SECONDS = 15
 STEP_TOLERANCE = 1e-6
 
 
@@ -55,6 +60,7 @@ class ServiceSpec:
     data_keys: tuple[str, ...] = ()
     fixed: tuple[tuple[str, str], ...] = ()
     connector_keys: tuple[str, ...] = ()
+    optional_connector_keys: tuple[str, ...] = ()
 
 
 ACTIONS: dict[tuple[str, str], ServiceSpec] = {
@@ -70,7 +76,14 @@ ACTIONS: dict[tuple[str, str], ServiceSpec] = {
     ("humidifier", "set_humidity"): ServiceSpec("humidifier", "set_humidity", data_keys=("humidity",)),
     ("switch", "power_on"): ServiceSpec("switch", "turn_on"),
     ("switch", "power_off"): ServiceSpec("switch", "turn_off"),
-    ("switch", "pulse_on"): ServiceSpec("switch", "turn_on", connector_keys=("max_on_seconds",)),
+    ("switch", "pulse_on"): ServiceSpec(
+        "switch", "turn_on", connector_keys=("max_on_seconds",), optional_connector_keys=("dose_seconds",)
+    ),
+    # A valve is only ever a pump: opened by a shot and closed, never opened outside one.
+    ("valve", "pulse_on"): ServiceSpec(
+        "valve", "open_valve", connector_keys=("max_on_seconds",), optional_connector_keys=("dose_seconds",)
+    ),
+    ("valve", "power_off"): ServiceSpec("valve", "close_valve"),
 }
 
 # The light controller's only HA services, by target state; used by light_control.py alone.
@@ -140,7 +153,8 @@ def service_spec(command: Command) -> ServiceSpec:
     if spec is None:
         raise InvalidCommand("action")
     data = command.data
-    if not isinstance(data, dict) or set(data) != {*spec.data_keys, *spec.connector_keys}:
+    required = {*spec.data_keys, *spec.connector_keys}
+    if not isinstance(data, dict) or not required <= set(data) <= required | set(spec.optional_connector_keys):
         raise InvalidCommand("data")
     if command.action == "set_hvac_mode" and data["hvac_mode"] not in WRITABLE_HVAC_MODES:
         raise InvalidCommand("hvac_mode")
@@ -150,6 +164,8 @@ def service_spec(command: Command) -> ServiceSpec:
         raise InvalidCommand("humidity")
     if command.action == "pulse_on" and max_on_seconds(command) is None:
         raise InvalidCommand("max_on_seconds")
+    if "dose_seconds" in data and dose_seconds(command) is None:
+        raise InvalidCommand("dose_seconds")
     return spec
 
 
@@ -160,6 +176,15 @@ def max_on_seconds(command: Command) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
         return None
     return value
+
+
+def dose_seconds(command: Command) -> int | None:
+    """The dose the watch cuts a `pulse_on` at, or None without one or out of range (5 s to max_on_seconds - 15)."""
+    value = command.data.get("dose_seconds") if isinstance(command.data, dict) else None
+    limit = max_on_seconds(command)
+    if limit is None or isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if DOSE_SECONDS_MIN <= value <= limit - MAX_ON_MARGIN_SECONDS else None
 
 
 def _is_number(value: Any) -> bool:

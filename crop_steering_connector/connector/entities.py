@@ -8,11 +8,21 @@ import re
 from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 
-ENTITY_ID_RE = re.compile(r"^(climate|humidifier|number|sensor|switch)\.[a-z0-9_]{1,200}$")
+ENTITY_ID_RE = re.compile(r"^(climate|humidifier|number|select|sensor|switch|valve)\.[a-z0-9_]{1,200}$")
+# What a report may carry: the commandable kinds plus, since 0.2.12, the problem `binary_sensor` of a humidifier's own
+# device (its tank full, a defrost, a fault). Commands keep `ENTITY_ID_RE`, so a binary sensor is never commanded.
+REPORTED_ENTITY_ID_RE = re.compile(r"^(binary_sensor|climate|humidifier|number|select|sensor|switch|valve)\.[a-z0-9_]{1,200}$")
+PROBLEM_DEVICE_CLASS = "problem"
 # The plug meters leave beside the climate sensors; current, voltage and the rest stay home.
 SENSOR_DEVICE_CLASSES = frozenset({"temperature", "humidity", "power", "energy"})
 # A plug's own pulse duration; no other `number` leaves the house.
 NUMBER_DEVICE_CLASS = "duration"
+# Since 0.2.12, a plug's power-on state (Smart Life's `relay_status`, «estado ao ligar»): the only `select` that
+# leaves, known by its options, so the Cropilot reads it instead of asking the grower. Its options name an off state and
+# a last-state one, all of them from this set; a select with any other option stays home.
+RELAY_STATUS_OPTIONS = frozenset({"power_off", "power_on", "last", "memory", "off", "on"})
+RELAY_STATUS_OFF = frozenset({"power_off", "off"})
+RELAY_STATUS_LAST = frozenset({"last", "memory"})
 # A battery `sensor` never leaves as an entity: its level rides on the entities of its device that already leave.
 BATTERY_DEVICE_CLASS = "battery"
 BATTERY_ATTRIBUTE = "battery_level"
@@ -42,7 +52,9 @@ NUMBER_ATTRIBUTES = ("min", "max", "step", "mode")
 # Only a `humidifier` keeps what it is doing now (`humidifying`, `drying`, `idle`, `off`), since 0.2.7, and its running
 # mode and the modes it offers, since 0.2.11. The server only stores them: no command writes a mode.
 HUMIDIFIER_ATTRIBUTES = ("action", "mode", "available_modes")
-DOMAIN_ATTRIBUTES = {"number": NUMBER_ATTRIBUTES, "humidifier": HUMIDIFIER_ATTRIBUTES}
+# The plug's power-on state keeps its options (0.2.12).
+SELECT_ATTRIBUTES = ("options",)
+DOMAIN_ATTRIBUTES = {"number": NUMBER_ATTRIBUTES, "humidifier": HUMIDIFIER_ATTRIBUTES, "select": SELECT_ATTRIBUTES}
 MAX_REPORT_BYTES = 61440
 MAX_REPORT_ENTITIES = 200
 # The identifier pairs of `device_identities` in one report, counted over the devices kept.
@@ -53,7 +65,7 @@ REFRESHED_SENSOR_CLASSES = frozenset({"temperature", "humidity"})
 # A climate's value: the readings the server takes from it, not its target, mode or fan.
 CLIMATE_READINGS = ("current_temperature", "current_humidity")
 # The first dropped when the report must shrink; the allowlisted entities go only when nothing else is left.
-DROP_ORDER = ("number", "switch", "sensor", "humidifier", "climate")
+DROP_ORDER = ("binary_sensor", "select", "number", "valve", "switch", "sensor", "humidifier", "climate")
 
 
 def _domain(entity_id: str) -> str:
@@ -183,15 +195,19 @@ def report_entity(
     if not isinstance(state, dict):
         return None
     entity_id = state.get("entity_id")
-    if not isinstance(entity_id, str) or not ENTITY_ID_RE.fullmatch(entity_id):
+    if not isinstance(entity_id, str) or not REPORTED_ENTITY_ID_RE.fullmatch(entity_id):
         return None
     raw_attributes = state.get("attributes")
     if not isinstance(raw_attributes, dict):
         raw_attributes = {}
     domain = _domain(entity_id)
+    if domain == "binary_sensor" and raw_attributes.get("device_class") != PROBLEM_DEVICE_CLASS:
+        return None
     if domain == "sensor" and raw_attributes.get("device_class") not in SENSOR_DEVICE_CLASSES:
         return None
     if domain == "number" and raw_attributes.get("device_class") != NUMBER_DEVICE_CLASS:
+        return None
+    if domain == "select" and not is_relay_status(raw_attributes.get("options")):
         return None
     value = state.get("state")
     if not isinstance(value, str):
@@ -209,6 +225,14 @@ def report_entity(
         entity["device_id"] = devices[entity_id]
     entity["attributes"] = attributes
     return entity
+
+
+def is_relay_status(options: Any) -> bool:
+    """A plug's power-on state by its options: text only, all of `RELAY_STATUS_OPTIONS`, with an off and a last one."""
+    if not isinstance(options, list) or not all(isinstance(option, str) for option in options):
+        return False
+    names = set(options)
+    return names <= RELAY_STATUS_OPTIONS and bool(names & RELAY_STATUS_OFF) and bool(names & RELAY_STATUS_LAST)
 
 
 def battery_level(state: Any) -> int | None:
@@ -252,16 +276,28 @@ def report_entities(
     value_changed: Mapping[str, float] | None = None,
 ) -> list[dict]:
     """The entities the report sends. With a device map, an entity of a device with a battery sensor carries that
-    level in `battery_level`, unless HA already gave it a valid one: only devices that already enter take a battery."""
+    level in `battery_level`, unless HA already gave it a valid one: only devices that already enter take a battery.
+
+    A problem `binary_sensor` leaves only beside a `humidifier` of its own HA device that leaves too; without a device
+    map, none leaves."""
     states = list(states)
     selected: dict[str, dict] = {}
     for state in states:
         entity = report_entity(state, now, devices, value_changed)
         if entity is not None:
             selected[entity["entity_id"]] = entity
+    humidifier_devices = {
+        devices.get(entity_id) for entity_id in selected if devices is not None and _domain(entity_id) == "humidifier"
+    }
+    for entity_id in [key for key in selected if _domain(key) == "binary_sensor"]:
+        device_id = devices.get(entity_id) if devices is not None else None
+        if not isinstance(device_id, str) or device_id not in humidifier_devices:
+            del selected[entity_id]
     batteries = device_batteries(states, devices) if devices is not None else {}
     for entity_id, entity in selected.items():
         device_id = devices.get(entity_id) if devices is not None else None
+        if _domain(entity_id) == "binary_sensor":
+            continue
         if isinstance(device_id, str) and device_id in batteries and not _valid_percent(entity["attributes"].get(BATTERY_ATTRIBUTE)):
             entity["attributes"][BATTERY_ATTRIBUTE] = batteries[device_id]
     return [selected[key] for key in sorted(selected)]

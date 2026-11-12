@@ -12,6 +12,7 @@ from .actions import (
     InvalidCommand,
     ServiceSpec,
     deadline_of,
+    dose_seconds,
     max_on_seconds,
     parse_command,
     service_body,
@@ -20,6 +21,7 @@ from .actions import (
 from .backoff import Backoff, parse_retry_after
 from .clients import Halted, describe, error_code, is_success, json_body
 from .context import Context
+from .pump_store import off_state
 from .reporting import utc_now_iso
 from .transport import CONNECT, Response, TransportError
 
@@ -128,7 +130,7 @@ class CommandLoop:
         watch = context.pump_watch if command.action == "pulse_on" else None
         if watch is not None:
             # Just before the HA call, so an `on` read from here on belongs to this shot.
-            watch.pulse_starting(command.entity_id, command.id, max_on_seconds(command))
+            watch.pulse_starting(command.entity_id, command.id, max_on_seconds(command), dose_seconds(command))
         outcome, code, changed = self._call(spec.domain, spec.service, body)
         if watch is not None:
             if outcome == "succeeded":
@@ -178,7 +180,7 @@ class CommandLoop:
             body = service_body(command, spec, state)
         except InvalidCommand:
             raise Refused("invalid_command") from None
-        if command.action == "pulse_on" and state.get("state") != "off":
+        if command.action == "pulse_on" and state.get("state") != off_state(command.entity_id):
             raise Refused("already_on")
         if command.action in NEEDS_POWER_ON and command.domain in POWERED_DOMAINS and state.get("state") == "off":
             raise Refused("would_power_on")

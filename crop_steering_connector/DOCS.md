@@ -10,7 +10,9 @@ umidade e comanda o ar-condicionado, o desumidificador, o umidificador e as toma
 - Ele não tem página: não aparece na barra lateral e não tem tela para abrir. O que ele faz aparece na aba Registro.
 - Ele manda ao Cropilot só os sensores de temperatura, umidade, potência e energia, os aparelhos de clima (como o
   ar-condicionado), os umidificadores, os desumidificadores e as tomadas deste Home Assistant, com o nome de cada
-  aparelho. Fechaduras, alarmes, câmeras e o resto ficam de fora. Quando um desses aparelhos informa a bateria no
+  aparelho. Fechaduras, alarmes, câmeras e o resto ficam de fora. Dos desumidificadores e umidificadores, ele manda
+  também os avisos de problema que o Home Assistant mostra no próprio aparelho, como o tanque cheio, só para leitura.
+  Quando um desses aparelhos informa a bateria no
   Home Assistant, ele manda também o nível dela, para o Cropilot avisar quando a bateria de um sensor fica fraca.
   Para cada aparelho, ele manda também o nome das integrações do Home Assistant em que o aparelho está e um código
   embaralhado de cada uma, feito a partir do código que a integração dá ao aparelho, para o Cropilot reconhecer o mesmo
@@ -75,9 +77,25 @@ iniciar, o conector tenta desligar a bomba que encontrar ligada fora de um dispa
 com o Cropilot, mas o desligamento passa pela nuvem do Smart Life: sem internet, só o pulso gravado na tomada desliga a
 bomba.
 
+Cada disparo vale pelo pulso que o Cropilot tem na hora em que o manda. Logo depois de você mudar o pulso, o primeiro
+disparo, o de teste incluído, já segue o pulso novo.
+
+A bomba também pode ser uma válvula do Home Assistant, com o conector 0.2.12 ou mais novo: o Cropilot abre a válvula
+nos disparos, e ela segue as mesmas regras da tomada da bomba. Quem fecha é o temporizador da própria válvula; se ela
+ficar aberta além do pulso ou abrir fora de um disparo, o conector a fecha. Enquanto ela aparece fechando, o conector
+espera até 30 segundos antes de tentar de novo. Antes de voltar o conector para a 0.2.11, tire a válvula da função
+Rega: a versão anterior não reconhece válvulas e descarta tudo o que a vigia da bomba guardou.
+
+O conector 0.2.12 também sabe desligar a bomba na dose exata de cada horário, deixando o pulso gravado na tomada só
+como reserva. Isso vem desligado e só passa a valer quando o Cropilot avisar: até lá, quem desliga a bomba continua
+sendo o pulso da tomada.
+
+Com o conector 0.2.12 ou mais novo, o Cropilot lê na tomada o estado ao ligar, quando o Home Assistant o mostra: ele
+deve ficar em “Desligado” no app Smart Life, para a bomba não ligar sozinha quando a energia volta.
+
 ## Umidificador
 
-O Cropilot liga o umidificador abaixo da umidade mínima da fase e desliga no meio da faixa, só na germinação, na
+O Cropilot liga o umidificador abaixo da umidade mínima da fase e desliga no ponto definido para a fase, só na germinação, na
 clonagem e no vegetativo. Deixe a umidade do próprio aparelho no máximo, para quem decide ser o Cropilot. Só um
 umidificador do Home Assistant entra nessa função, e ela pede o conector 0.2.7 ou mais novo.
 

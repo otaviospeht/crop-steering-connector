@@ -4,8 +4,8 @@ outside a Cropilot shot.
 It runs in its own daemon thread, with its own HA client bound to its own event, and its own loop: never the
 connector's `halt` or `_loop`, so a revoked pairing (a 401), the other stop lines and an unreachable Cropilot
 never stop it. It never calls the Cropilot. Its only HA service is `switch.turn_off`, only on a `switch` of the
-pump list or of an open cycle: the single HA call the connector makes without the Cropilot's start of a
-command. The list, the open cycles and the events live in the pump file, so a restart resumes from it before
+pump list or of an open cycle, or `valve.close_valve` for a valve pump (0.2.12): the single HA call the
+connector makes without the Cropilot's start of a command. The list, the open cycles and the events live in the pump file, so a restart resumes from it before
 any Cropilot call.
 """
 
@@ -22,7 +22,7 @@ from typing import Iterable
 from . import messages
 from .clients import HomeAssistantClient, json_body
 from .context import Clock
-from .pump_store import MAX_EVENTS, PUMP_ENTITY_RE, Cycle, PumpEvent, PumpFile, PumpStore, is_max_on
+from .pump_store import MAX_EVENTS, PUMP_ENTITY_RE, Cycle, PumpEvent, PumpFile, PumpStore, is_max_on, off_state
 from .transport import Transport, TransportError
 
 POLL_HOT_SECONDS = 1.0
@@ -34,7 +34,13 @@ RETRY_SLOW_SECONDS = 60.0
 OFF_FAILED_AFTER_TRIES = 3
 ERROR_LOG_INTERVAL_SECONDS = 60.0
 UNAVAILABLE_STATES = frozenset({"unavailable", "unknown"})
+OFF_SERVICES = {"switch": "/services/switch/turn_off", "valve": "/services/valve/close_valve"}
 WHERE = "bomba"
+# The watch's off at the dose closes the shot as a normal end.
+DOSE_CUT = "ended"
+# A valve's motor takes a while to close: `closing` after a try is that try working, until this grace runs out.
+VALVE_CLOSING_STATE = "closing"
+VALVE_CLOSING_GRACE_SECONDS = 30.0
 CLOSING_LINES = {
     "forced_off": messages.PUMP_FORCED_OFF,
     "outside_off": messages.PUMP_OUTSIDE_OFF,
@@ -49,6 +55,7 @@ class _InFlight:
     command_id: str
     max_on_seconds: int
     until: float
+    dose_seconds: int | None = None
 
 
 @dataclass
@@ -59,6 +66,11 @@ class _Cut:
     first_try_at: float | None = None
     next_try_at: float | None = None
     awaiting_check: bool = False
+    tried_at: float | None = None
+
+
+def _closing(entity_id: str, state: str) -> bool:
+    return entity_id.startswith("valve.") and state == VALVE_CLOSING_STATE
 
 
 def _instant(value: object) -> float | None:
@@ -137,7 +149,7 @@ class PumpWatch:
     # Calls from the report and command loops
 
     def replace_list(self, pumps: Iterable[tuple[str, int | None]]) -> None:
-        """The pump entries of an accepted report answer; only `switch` entities become pumps."""
+        """The pump entries of an accepted report answer; only `switch` and `valve` entities become pumps."""
         listed = {
             entity_id: max_on if is_max_on(max_on) else None
             for entity_id, max_on in pumps
@@ -156,10 +168,15 @@ class PumpWatch:
         with self._lock:
             return entity_id in self._pumps
 
-    def pulse_starting(self, entity_id: str, command_id: str, max_on_seconds: int) -> None:
+    def pulse_starting(self, entity_id: str, command_id: str, max_on_seconds: int, dose_seconds: int | None = None) -> None:
+        """The shot's `max_on_seconds` is the pulse the Cropilot holds now (its start refuses an older one), so it
+        replaces the list's, which may still be the one before a pulse change until the next report answer."""
         with self._lock:
             until = self._clock.monotonic() + ATTACH_WINDOW_SECONDS
-            self._in_flight[entity_id] = _InFlight(command_id, max_on_seconds, until)
+            self._in_flight[entity_id] = _InFlight(command_id, max_on_seconds, until, dose_seconds)
+            if entity_id in self._pumps and self._pumps[entity_id] != max_on_seconds:
+                self._pumps[entity_id] = max_on_seconds
+                self._persist()
         self._wake.set()
 
     def pulse_succeeded(self, entity_id: str, command_id: str) -> None:
@@ -262,9 +279,9 @@ class PumpWatch:
 
     def _turn_off(self, entity_id: str) -> None:
         if not PUMP_ENTITY_RE.fullmatch(entity_id):
-            raise ValueError("the watch turns off only a switch")
+            raise ValueError("the watch turns off only a switch or a valve")
         try:
-            self._ha.post("/services/switch/turn_off", {"entity_id": entity_id})
+            self._ha.post(OFF_SERVICES[entity_id.split(".", 1)[0]], {"entity_id": entity_id})
         except TransportError:
             # The next read finds it still on, and the retry follows.
             return
@@ -275,7 +292,7 @@ class PumpWatch:
         """Update the cycle for one read; True when the watch must call `switch.turn_off` now."""
         cycle = self._cycles.get(entity_id)
         boot = entity_id in self._boot_pending
-        if state == "off":
+        if state == off_state(entity_id):
             self._boot_pending.discard(entity_id)
             if cycle is not None:
                 self._close(entity_id, cycle, changed_at)
@@ -290,17 +307,28 @@ class PumpWatch:
             within = cycle.command_id is not None and cycle.tries == 0
             if not (within and self._clock.time() - cycle.started_at < self._limit(entity_id, cycle)):
                 self._cuts[entity_id] = _Cut("boot_off")
-        if entity_id not in self._cuts and self._clock.time() - cycle.started_at >= self._limit(entity_id, cycle):
+        elapsed = self._clock.time() - cycle.started_at
+        past_limit = elapsed >= self._limit(entity_id, cycle)
+        if past_limit and self._cuts.get(entity_id, _Cut("")).kind == DOSE_CUT:
+            # The dose off did not take and the pump ran on to its limit: from here it is a forced off.
+            self._cuts[entity_id].kind = "forced_off"
+        if entity_id not in self._cuts and past_limit:
             self._cuts[entity_id] = _Cut("forced_off" if cycle.command_id is not None else "outside_off")
+        if entity_id not in self._cuts and cycle.dose_seconds is not None and elapsed >= cycle.dose_seconds:
+            # The dose is reached: the shot ends here, and the pump's own timer was only the backup.
+            self._cuts[entity_id] = _Cut(DOSE_CUT)
         cut = self._cuts.get(entity_id)
-        return cut is not None and self._next_try(entity_id, cycle, cut)
+        return cut is not None and self._next_try(entity_id, cycle, cut, state)
 
     def _open(self, entity_id: str, started_at: float, boot: bool) -> Cycle:
         flight = self._in_flight.pop(entity_id, None)
         if flight is not None and self._clock.monotonic() <= flight.until:
-            listed = self._pumps.get(entity_id)
-            limit = flight.max_on_seconds if listed is None else min(flight.max_on_seconds, listed)
-            cycle = Cycle(started_at=started_at, command_id=flight.command_id, limit_seconds=limit)
+            cycle = Cycle(
+                started_at=started_at,
+                command_id=flight.command_id,
+                limit_seconds=flight.max_on_seconds,
+                dose_seconds=flight.dose_seconds,
+            )
         else:
             # Outside a shot the limit is zero: cut at the first read.
             cycle = Cycle(started_at=started_at, command_id=None, limit_seconds=0)
@@ -314,8 +342,12 @@ class PumpWatch:
             return cycle.limit_seconds
         return self._pumps.get(entity_id) or 0
 
-    def _next_try(self, entity_id: str, cycle: Cycle, cut: _Cut) -> bool:
+    def _next_try(self, entity_id: str, cycle: Cycle, cut: _Cut, state: str) -> bool:
         now = self._clock.monotonic()
+        tried_at = cut.tried_at
+        if cut.awaiting_check and tried_at is not None and _closing(entity_id, state):
+            if now - tried_at < VALVE_CLOSING_GRACE_SECONDS:
+                return False
         if cut.awaiting_check:
             # The read after a try is still not off: that try failed.
             cut.awaiting_check = False
@@ -331,6 +363,7 @@ class PumpWatch:
             return False
         cycle.tries += 1
         cut.first_try_at = now if cut.first_try_at is None else cut.first_try_at
+        cut.tried_at = now
         cut.awaiting_check = True
         self._persist()
         return True
@@ -338,7 +371,8 @@ class PumpWatch:
     def _close(self, entity_id: str, cycle: Cycle, off_at: float) -> None:
         cut = self._cuts.pop(entity_id, None)
         if cut is not None:
-            kind = cut.kind
+            # The dose off that needed a retry was not a normal end.
+            kind = "forced_off" if cut.kind == DOSE_CUT and cycle.tries > 1 else cut.kind
         elif cycle.command_id is not None:
             kind = "forced_off" if cycle.tries else "ended"
         else:

@@ -1,5 +1,20 @@
 # Mudanças
 
+## 0.2.12
+
+- Logo depois de você mudar o pulso da bomba, o primeiro disparo, o de teste incluído, já segue o pulso novo. Antes, o
+  Conector ainda podia desligar a bomba no fim do pulso antigo.
+- A bomba de rega pode ser uma válvula do Home Assistant: o Cropilot abre a válvula nos disparos, e o Conector a fecha se
+  ela ficar aberta além do pulso ou abrir fora de um disparo. A válvula que demora a fechar tem até 30 segundos antes de
+  o Conector contar uma tentativa como falha. Antes de voltar para a 0.2.11, tire a válvula da função Rega: a versão
+  anterior não reconhece válvulas e descarta tudo o que a vigia da bomba guardou.
+- O Conector já sabe desligar a bomba na dose exata de cada horário, com o pulso da tomada só como reserva. Isso vem
+  desligado e só passa a valer quando o Cropilot avisar; até lá, a rega segue como antes.
+- O Conector manda ao Cropilot o estado ao ligar da tomada, quando o Home Assistant o mostra. Assim, o Cropilot confere
+  se ele está em “Desligado”, para a bomba não ligar sozinha quando a energia volta.
+- O Conector manda ao Cropilot os avisos de problema que o Home Assistant mostra no próprio desumidificador ou
+  umidificador, como o tanque cheio, só para leitura. Assim, o Cropilot avisa quando o tanque do desumidificador enche.
+
 ## 0.2.11
 
 - O Conector passa a mandar ao Cropilot o modo em que o desumidificador está e os modos que ele oferece, só para

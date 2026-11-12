@@ -23,7 +23,9 @@ FILE_VERSION = 1
 MAX_EVENTS = 20
 MAX_FILE_BYTES = 262_144
 EVENT_KINDS = frozenset({"ended", "forced_off", "outside_off", "boot_off", "off_failed"})
-PUMP_ENTITY_RE = re.compile(r"^switch\.[a-z0-9_]{1,200}$")
+# A pump is a plug (`switch`) or, since 0.2.12, a `valve`, opened as on and closed as off.
+PUMP_ENTITY_RE = re.compile(r"^(switch|valve)\.[a-z0-9_]{1,200}$")
+OFF_STATES = {"switch": "off", "valve": "closed"}
 COMMAND_ID_RE = re.compile(r"^[0-9A-Za-z]{26}$")
 EVENT_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 MAX_ON_SECONDS_RANGE = (20, 915)
@@ -42,6 +44,8 @@ class Cycle:
     limit_seconds: int | None
     tries: int = 0
     off_failed_sent: bool = False
+    # Since 0.2.12, the dose the watch cuts the shot at; the pump's own pulse is then the backup.
+    dose_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +76,11 @@ class PumpFile:
     pumps: dict[str, int | None] = field(default_factory=dict)
     cycles: dict[str, Cycle] = field(default_factory=dict)
     events: list[PumpEvent] = field(default_factory=list)
+
+
+def off_state(entity_id: str) -> str:
+    """The state that reads as off for a pump of this domain: `off` for a plug, `closed` for a valve."""
+    return OFF_STATES.get(entity_id.split(".", 1)[0], "off")
 
 
 def is_max_on(value: Any) -> bool:
@@ -119,12 +128,15 @@ def _cycles(raw: Any) -> dict[str, Cycle]:
         _require(limit is None or (_is_count(limit) and limit <= MAX_ON_SECONDS_RANGE[1]), "cycle limit_seconds")
         _require(_is_count(item.get("tries")), "cycle tries")
         _require(isinstance(item.get("off_failed_sent"), bool), "cycle off_failed_sent")
+        dose = item.get("dose_seconds")
+        _require(dose is None or (_is_count(dose) and dose <= MAX_ON_SECONDS_RANGE[1]), "cycle dose_seconds")
         cycles[entity_id] = Cycle(
             started_at=float(item["started_at"]),
             command_id=item["command_id"],
             limit_seconds=limit,
             tries=item["tries"],
             off_failed_sent=item["off_failed_sent"],
+            dose_seconds=dose,
         )
     return cycles
 
@@ -176,6 +188,7 @@ def serialize(content: PumpFile) -> dict:
                 "limit_seconds": cycle.limit_seconds,
                 "tries": cycle.tries,
                 "off_failed_sent": cycle.off_failed_sent,
+                "dose_seconds": cycle.dose_seconds,
             }
             for entity_id, cycle in content.cycles.items()
         },
