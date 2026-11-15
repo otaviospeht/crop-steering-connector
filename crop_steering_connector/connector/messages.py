@@ -192,6 +192,11 @@ DEVICE_IDENTITIES_FAILED = (
     "Falha ao ler as integrações dos aparelhos no Home Assistant: {detail}. O conector tenta de novo na próxima "
     "leitura dos aparelhos."
 )
+# Once per process, at the first failed device info read (0.2.13); `{detail}` as above, never a value it read.
+DEVICE_INFO_FAILED = (
+    "Falha ao ler o fabricante e o modelo dos aparelhos no Home Assistant: {detail}. O conector tenta de novo na "
+    "próxima leitura dos aparelhos."
+)
 LIGHT_FILE_UNREADABLE = (
     "Os horários da iluminação guardados não puderam ser lidos. O conector espera os próximos horários do Cropilot."
 )
@@ -230,6 +235,7 @@ TECHNICAL = (
     HUMIDIFIER_WATCHED_DROPPED,
     SENSOR_REFRESH_FAILED,
     DEVICE_IDENTITIES_FAILED,
+    DEVICE_INFO_FAILED,
     LIGHT_FILE_UNREADABLE,
     LIGHT_EVENTS_DROPPED,
     LIGHT_NIGHT_GUARD_DONE,

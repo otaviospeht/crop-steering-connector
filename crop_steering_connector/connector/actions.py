@@ -23,6 +23,10 @@ Since 0.2.10 the light controller (light_control.py) switches a light plug at th
 Cropilot sends, with no claimed command: its own closed table, `LOCAL_LIGHT_SERVICES`, holds only `switch.turn_on`
 and `switch.turn_off`, body exactly `{entity_id}`. It is not in `ACTIONS`, so a claimed command named after it is
 still `invalid_command`, and no server answer can name another service or add a key.
+Since 0.2.14 a smart bulb (`light`) in the Light role is turned on and off like a plug: `power_on` is `light.turn_on`
+and `power_off` is `light.turn_off`, body exactly `{entity_id}` (no data key is accepted, so never a brightness, a
+color, an effect, a flash or a transition), and the light controller's table holds `light.turn_on` and
+`light.turn_off` with that same body.
 """
 
 from __future__ import annotations
@@ -74,6 +78,9 @@ ACTIONS: dict[tuple[str, str], ServiceSpec] = {
     ("humidifier", "power_on"): ServiceSpec("humidifier", "turn_on"),
     ("humidifier", "power_off"): ServiceSpec("humidifier", "turn_off"),
     ("humidifier", "set_humidity"): ServiceSpec("humidifier", "set_humidity", data_keys=("humidity",)),
+    # A smart bulb only ever goes on or off, with no data.
+    ("light", "power_on"): ServiceSpec("light", "turn_on"),
+    ("light", "power_off"): ServiceSpec("light", "turn_off"),
     ("switch", "power_on"): ServiceSpec("switch", "turn_on"),
     ("switch", "power_off"): ServiceSpec("switch", "turn_off"),
     ("switch", "pulse_on"): ServiceSpec(
@@ -86,8 +93,13 @@ ACTIONS: dict[tuple[str, str], ServiceSpec] = {
     ("valve", "power_off"): ServiceSpec("valve", "close_valve"),
 }
 
-# The light controller's only HA services, by target state; used by light_control.py alone.
-LOCAL_LIGHT_SERVICES: dict[str, str] = {"on": "switch/turn_on", "off": "switch/turn_off"}
+# The light controller's only HA services, by (entity domain, target state); used by light_control.py alone.
+LOCAL_LIGHT_SERVICES: dict[tuple[str, str], str] = {
+    ("switch", "on"): "switch/turn_on",
+    ("switch", "off"): "switch/turn_off",
+    ("light", "on"): "light/turn_on",
+    ("light", "off"): "light/turn_off",
+}
 
 
 class InvalidCommand(Exception):

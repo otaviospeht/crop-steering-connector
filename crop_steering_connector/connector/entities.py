@@ -8,10 +8,15 @@ import re
 from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 
-ENTITY_ID_RE = re.compile(r"^(climate|humidifier|number|select|sensor|switch|valve)\.[a-z0-9_]{1,200}$")
+from .device_info import MAX_DEVICE_INFO_ENTRIES, DeviceInfo, wire
+
+# Since 0.2.14 a `light` (a smart bulb in the Light role) too, only ever turned on or off with no data (actions.py).
+ENTITY_ID_RE = re.compile(r"^(climate|humidifier|light|number|select|sensor|switch|valve)\.[a-z0-9_]{1,200}$")
 # What a report may carry: the commandable kinds plus, since 0.2.12, the problem `binary_sensor` of a humidifier's own
 # device (its tank full, a defrost, a fault). Commands keep `ENTITY_ID_RE`, so a binary sensor is never commanded.
-REPORTED_ENTITY_ID_RE = re.compile(r"^(binary_sensor|climate|humidifier|number|select|sensor|switch|valve)\.[a-z0-9_]{1,200}$")
+REPORTED_ENTITY_ID_RE = re.compile(
+    r"^(binary_sensor|climate|humidifier|light|number|select|sensor|switch|valve)\.[a-z0-9_]{1,200}$"
+)
 PROBLEM_DEVICE_CLASS = "problem"
 # The plug meters leave beside the climate sensors; current, voltage and the rest stay home.
 SENSOR_DEVICE_CLASSES = frozenset({"temperature", "humidity", "power", "energy"})
@@ -55,17 +60,22 @@ HUMIDIFIER_ATTRIBUTES = ("action", "mode", "available_modes")
 # The plug's power-on state keeps its options (0.2.12).
 SELECT_ATTRIBUTES = ("options",)
 DOMAIN_ATTRIBUTES = {"number": NUMBER_ATTRIBUTES, "humidifier": HUMIDIFIER_ATTRIBUTES, "select": SELECT_ATTRIBUTES}
+# A `light` leaves with its on/off state, its name and its features only (0.2.14): brightness, color, color modes and
+# effects stay home, and no battery level rides on it.
+LIGHT_ATTRIBUTES = ("friendly_name", "supported_features")
 MAX_REPORT_BYTES = 61440
 MAX_REPORT_ENTITIES = 200
 # The identifier pairs of `device_identities` in one report, counted over the devices kept.
 MAX_IDENTITY_PAIRS = 200
+# `,"device_info":{}`: the key and its braces, which only an entry left after the identities brings into the body.
+DEVICE_INFO_KEY_BYTES = len(',"device_info":{}')
 MAX_AGE_SECONDS = 2_592_000
 # Beside every `climate`, the sensors the refresh (refresh.py) asks HA to write again.
 REFRESHED_SENSOR_CLASSES = frozenset({"temperature", "humidity"})
 # A climate's value: the readings the server takes from it, not its target, mode or fan.
 CLIMATE_READINGS = ("current_temperature", "current_humidity")
 # The first dropped when the report must shrink; the allowlisted entities go only when nothing else is left.
-DROP_ORDER = ("binary_sensor", "select", "number", "valve", "switch", "sensor", "humidifier", "climate")
+DROP_ORDER = ("binary_sensor", "light", "select", "number", "valve", "switch", "sensor", "humidifier", "climate")
 
 
 def _domain(entity_id: str) -> str:
@@ -215,7 +225,7 @@ def report_entity(
     age = written_age_seconds(state, now)
     if age is None:
         return None
-    kept = KEPT_ATTRIBUTES + DOMAIN_ATTRIBUTES.get(domain, ())
+    kept = LIGHT_ATTRIBUTES if domain == "light" else KEPT_ATTRIBUTES + DOMAIN_ATTRIBUTES.get(domain, ())
     attributes = {key: raw_attributes[key] for key in kept if key in raw_attributes and _json_safe(raw_attributes[key])}
     entity: dict = {"entity_id": entity_id, "state": value, "age_seconds": age}
     value_age = value_age_seconds(state, now, value_changed.get(entity_id) if value_changed is not None else None)
@@ -296,7 +306,7 @@ def report_entities(
     batteries = device_batteries(states, devices) if devices is not None else {}
     for entity_id, entity in selected.items():
         device_id = devices.get(entity_id) if devices is not None else None
-        if _domain(entity_id) == "binary_sensor":
+        if _domain(entity_id) in ("binary_sensor", "light"):
             continue
         if isinstance(device_id, str) and device_id in batteries and not _valid_percent(entity["attributes"].get(BATTERY_ATTRIBUTE)):
             entity["attributes"][BATTERY_ATTRIBUTE] = batteries[device_id]
@@ -321,12 +331,15 @@ def _body(
     entities: list[dict],
     devices: dict[str, str] | None,
     identities: dict[str, list[list[str]]] | None = None,
+    info: dict[str, dict[str, str | None]] | None = None,
 ) -> dict:
     body = {**envelope, "entities": entities}
     if devices is not None:
         body["devices"] = devices
     if identities is not None:
         body["device_identities"] = identities
+    if info is not None:
+        body["device_info"] = info
     return body
 
 
@@ -358,6 +371,29 @@ def _fit_identities(
     return entries
 
 
+def _fit_device_info(
+    sent: list[dict], infos: Mapping[str, DeviceInfo], room: int
+) -> dict[str, dict[str, str | None]]:
+    """The `device_info` of the devices of the entities sent that the last info read holds, in order of first
+    appearance, within 200 entries and the `room` bytes the entities, the devices, the identities and the key with its
+    braces left; whole entries leave, the longest first, ties by id. A device with no entry keeps its values on the
+    server."""
+    entries: dict[str, dict[str, str | None]] = {}
+    for entity in sent:
+        device_id = entity.get("device_id")
+        if isinstance(device_id, str) and device_id in infos and device_id not in entries:
+            entries[device_id] = wire(infos[device_id])
+    # `"<id>":{…}`, the encoded one-entry object without its braces.
+    sizes = {device_id: len(_encode({device_id: entry})) - 2 for device_id, entry in entries.items()}
+    used = sum(sizes.values()) + max(0, len(entries) - 1)
+    for device_id in sorted(entries, key=lambda item: (-sizes[item], item)):
+        if len(entries) <= MAX_DEVICE_INFO_ENTRIES and used <= room:
+            break
+        used -= sizes[device_id] + (1 if len(entries) > 1 else 0)
+        del entries[device_id]
+    return entries
+
+
 def build_report(
     envelope: dict,
     entities: list[dict],
@@ -367,6 +403,7 @@ def build_report(
     max_entities: int = MAX_REPORT_ENTITIES,
     device_names: Mapping[str, str] | None = None,
     device_identities: Mapping[str, Sequence[tuple[str, str]]] | None = None,
+    device_info: Mapping[str, DeviceInfo] | None = None,
 ) -> tuple[bytes, int, int]:
     """Encode the report within the limits; returns (body, entities sent, entities left out).
 
@@ -375,7 +412,11 @@ def build_report(
     body carries `devices`, right after `entities`: each named device of the entities sent, once. A device's
     entry counts while one kept entity points to it and leaves with the last one. Then `device_identities`, right
     after `devices`: the entries of `device_identities` for the devices of the entities sent, named or not, which
-    take only the bytes the entities and the devices left, so an entity never leaves for an identity.
+    take only the bytes the entities and the devices left, so an entity never leaves for an identity. Then, with
+    `device_info` too (a good info read while the server asks), `device_info`, right after `device_identities`: the
+    entries for the devices of the entities sent, which, with the key and its braces, take only the bytes the
+    identities left. With no entry left the key is omitted, as the server reads a missing key and an empty map alike
+    (every device keeps its stored values), so such a report is byte for byte the one built without `device_info`.
     """
     candidates = list(entities)
     if restriction >= 1:
@@ -411,6 +452,7 @@ def build_report(
     sent = [entity for entity in candidates if entity["entity_id"] in kept]
     devices = None
     identities = None
+    info = None
     if mapped:
         devices = {}
         for entity in sent:
@@ -418,7 +460,11 @@ def build_report(
             if device_id is not None and device_id not in devices:
                 devices[device_id] = names[device_id]
         identities = _fit_identities(sent, device_identities or {}, max_bytes - total)
-    body = _encode(_body(envelope, sent, devices, identities))
+        if device_info is not None:
+            # The identities' entries, without the braces the base already counts; the info key comes from what is left.
+            total += len(_encode(identities)) - 2
+            info = _fit_device_info(sent, device_info, max_bytes - total - DEVICE_INFO_KEY_BYTES) or None
+    body = _encode(_body(envelope, sent, devices, identities, info))
     if len(body) > max_bytes:
         raise ValueError("report envelope does not fit the size limit")
     return body, len(sent), len(entities) - len(sent)

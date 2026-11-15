@@ -9,11 +9,11 @@ umidade e comanda o ar-condicionado, o desumidificador, o umidificador e as toma
   e o Cropilot nunca entra na sua rede.
 - Ele não tem página: não aparece na barra lateral e não tem tela para abrir. O que ele faz aparece na aba Registro.
 - Ele manda ao Cropilot só os sensores de temperatura, umidade, potência e energia, os aparelhos de clima (como o
-  ar-condicionado), os umidificadores, os desumidificadores e as tomadas deste Home Assistant, com o nome de cada
-  aparelho. Fechaduras, alarmes, câmeras e o resto ficam de fora. Dos desumidificadores e umidificadores, ele manda
-  também os avisos de problema que o Home Assistant mostra no próprio aparelho, como o tanque cheio, só para leitura.
-  Quando um desses aparelhos informa a bateria no
-  Home Assistant, ele manda também o nível dela, para o Cropilot avisar quando a bateria de um sensor fica fraca.
+  ar-condicionado), os umidificadores, os desumidificadores, as tomadas e as lâmpadas deste Home Assistant, com o nome
+  de cada aparelho. De cada lâmpada, ele manda só se ela está acesa ou apagada, nunca o brilho nem a cor. Fechaduras,
+  alarmes, câmeras e o resto ficam de fora. Dos desumidificadores e umidificadores, ele manda também os avisos de
+  problema que o Home Assistant mostra no próprio aparelho, como o tanque cheio, só para leitura. Quando um desses
+  aparelhos informa a bateria no Home Assistant, ele manda também o nível dela, para o Cropilot avisar quando a bateria de um sensor fica fraca.
   Para cada aparelho, ele manda também o nome das integrações do Home Assistant em que o aparelho está e um código
   embaralhado de cada uma, feito a partir do código que a integração dá ao aparelho, para o Cropilot reconhecer o mesmo
   aparelho compatível com Smart Life se o Home Assistant for reinstalado. O Cropilot não guarda esses códigos: usa só o
@@ -23,6 +23,10 @@ umidade e comanda o ar-condicionado, o desumidificador, o umidificador e as toma
   fica igual por um tempo deixaria de valer no Cropilot. O pedido só atualiza a leitura: não liga, não desliga e não
   muda nenhum aparelho. Ele também diz ao Cropilot há quanto tempo cada um desses valores não muda. Assim, o Cropilot
   mostra quando um valor fica igual por muito tempo, sem deixar de usar a leitura.
+- O Conector pode mandar ao Cropilot o fabricante, o modelo, o código do modelo e a versão do firmware de cada
+  aparelho, como o Home Assistant os mostra, quando o Cropilot pedir. Assim, a página do aparelho mostra o modelo, e
+  você vê quais funções a equipe já testou com ele. O número de série e os endereços de rede do aparelho nunca saem do
+  Home Assistant.
 - Os aparelhos que o Cropilot sabe usar entram sozinhos em Dispositivos, no Cropilot. Lá, “Tirar” tira um aparelho
   da lista, e o Cropilot para de ler e de comandar esse aparelho. “Liberar” traz o aparelho de volta.
 - O Cropilot só comanda uma tomada que tem função num espaço: iluminação, exaustor, bomba de rega ou desumidificador. Sem
@@ -114,6 +118,9 @@ apague essa tomada. O Conector guarda os horários e segue com eles por até 7 d
 depois disso, ele para e deixa a iluminação como está. A tomada Smart Life só recebe o comando pela internet: sem
 internet ou com o Home Assistant desligado, a iluminação fica como está até eles voltarem. O timer da própria tomada
 funciona sem internet.
+
+Uma lâmpada inteligente também pode ser a iluminação do espaço, como a tomada. O Cropilot só a acende e a apaga: nunca
+muda o brilho, a cor nem os efeitos dela, e o Conector recusa qualquer outro pedido para a lâmpada.
 
 ## Segurança
 

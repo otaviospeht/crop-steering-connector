@@ -16,6 +16,10 @@ A 0.2.10 report also carries the light controller's keys right after `humidifier
 schedules it holds, always whole, and `light_events`, taken and dropped as the humidifier's, the oldest that fit
 beside it in 16384 bytes. Every accepted answer goes to the controller with its light markers, and every good map
 read with the HA device of each entity (light_control.py).
+A 0.2.13 report carries `device_info` right after `device_identities` only while the last accepted answer said
+`device_info_wanted` true, and only after a good info read in this process (devices.py): an answer without that true
+drops the info at once, as a 403 refusal does, and a flip to true invalidates the map, so the next report, brought
+forward, reads it.
 """
 
 from __future__ import annotations
@@ -206,6 +210,7 @@ class ReportLoop:
             self._restriction,
             device_names=device_map.names if device_map is not None else None,
             device_identities=device_map.identities if device_map is not None else None,
+            device_info=device_map.info if device_map is not None and self._devices.info_wanted else None,
         )
         if self._restriction == 0 and dropped != self._last_dropped:
             self._last_dropped = dropped
@@ -253,8 +258,12 @@ class ReportLoop:
         entries = data.get("allowlist") if isinstance(data, dict) else None
         parsed = _parse_allowlist(entries)
         if parsed is None:
+            # Fail closed: an answer the connector cannot read never keeps the device info going.
+            self._devices.want_info(False)
             self._accepted_last = False
             return self._failed("resposta inválida")
+        # Only the JSON true asks; an older server sends no key, which is false.
+        self._devices.want_info(data.get("device_info_wanted") is True)
         if watch is not None:
             # The pumps first, so a pulse_on the new allowlist allows always finds its pump.
             watch.replace_list(_parse_pumps(entries))
@@ -327,6 +336,8 @@ class ReportLoop:
             context.stop(messages.V13_REVOKED, forget_token=True)
             return 0.0
         if action == policy.BACKOFF_300:
+            # A 403: no device info while the server refuses; only a later accepted true asks for it again.
+            self._devices.want_info(False)
             context.forbidden()
             return self._backoff.ceiling()
         if action == policy.ALLOWLISTED_ONLY:

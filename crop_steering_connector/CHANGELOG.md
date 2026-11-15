@@ -1,5 +1,19 @@
 # Mudanças
 
+## 0.2.14
+
+- Uma lâmpada inteligente pode ser a iluminação do espaço, como a tomada: o Conector mostra ao Cropilot se ela está
+  acesa ou apagada, e o Cropilot pode acendê-la e apagá-la nos horários da fase. O Cropilot nunca muda o brilho, a cor
+  nem os efeitos da lâmpada, e o Conector recusa qualquer outro pedido para ela.
+- Antes de voltar para a 0.2.13, tire a lâmpada da função Iluminação: a versão anterior não reconhece lâmpadas e
+  descarta os horários de iluminação que o Conector guardou, os das tomadas também, até o Cropilot mandá-los de novo.
+
+## 0.2.13
+
+- O Conector pode mandar ao Cropilot o fabricante, o modelo, o código do modelo e a versão do firmware de cada aparelho,
+  como o Home Assistant os mostra, quando o Cropilot pedir. Assim, a página do aparelho mostra o modelo, e você vê quais
+  funções a equipe já testou com ele. O número de série e os endereços de rede do aparelho nunca saem do Home Assistant.
+
 ## 0.2.12
 
 - Logo depois de você mudar o pulso da bomba, o primeiro disparo, o de teste incluído, já segue o pulso novo. Antes, o

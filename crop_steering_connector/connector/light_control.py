@@ -25,8 +25,9 @@ up, and the wait gives NTP time to set the clock. A plug that answers without th
 first contact.
 
 A plug is switched only while the last good map read of this process gives it the HA device of its marker; another
-device drops its schedule. The only HA services are `switch.turn_on` and `switch.turn_off` (`LOCAL_LIGHT_SERVICES`,
-in actions.py), body exactly `{entity_id}`. Like the watches it runs in its own daemon thread with
+device drops its schedule. The only HA services are `switch.turn_on` and `switch.turn_off` and, since 0.2.14, for a
+smart bulb in the Light role, `light.turn_on` and `light.turn_off` (`LOCAL_LIGHT_SERVICES`, in actions.py), body
+exactly `{entity_id}`: never a brightness, a color, an effect or a transition. Like the watches it runs in its own daemon thread with
 its own HA client, starts before any Cropilot call, never calls the Cropilot and never calls the Supervisor. Every
 halt of the connector and every new pairing drop every schedule, with the lights as they are.
 """
@@ -155,13 +156,16 @@ def markers_of(entries: Iterable[Any]) -> dict[str, Any]:
 
 
 def compressor_switches(states: Iterable[Any], devices: Mapping[str, str | None] | None) -> frozenset[str]:
-    """The switches whose HA device also holds a climate or a humidifier in these states: compressor plugs."""
+    """The switches and lights whose HA device also holds a climate or a humidifier in these states: compressor plugs
+    and, since 0.2.14, a light of such a device, never in the Light role."""
     if devices is None:
         return frozenset()
     ids = [item["entity_id"] for item in states if isinstance(item, dict) and isinstance(item.get("entity_id"), str)]
     holders = {devices.get(entity_id) for entity_id in ids if entity_id.split(".", 1)[0] in ("climate", "humidifier")}
     holders.discard(None)
-    return frozenset(item for item in ids if item.startswith("switch.") and devices.get(item) in holders)
+    return frozenset(
+        item for item in ids if item.startswith(("switch.", "light.")) and devices.get(item) in holders
+    )
 
 
 def report_keys(
@@ -815,9 +819,10 @@ class LightControl:
 
     def _call(self, entity_id: str, state: str) -> None:
         if not LIGHT_ENTITY_RE.fullmatch(entity_id):
-            raise ValueError("the controller switches only a switch")
+            raise ValueError("the controller switches only a switch or a light")
+        service = LOCAL_LIGHT_SERVICES[("light" if entity_id.startswith("light.") else "switch", state)]
         try:
-            self._ha.post(f"/services/{LOCAL_LIGHT_SERVICES[state]}", {"entity_id": entity_id})
+            self._ha.post(f"/services/{service}", {"entity_id": entity_id})
         except TransportError:
             # Not answered: the read after it finds the plug as it was, and the retry follows.
             return

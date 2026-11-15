@@ -1,7 +1,7 @@
 """The device map: the HA device of each state the report may send, read from HA's template API.
 
-The connector renders only `DEVICE_TEMPLATE` and `IDENTITY_TEMPLATE`, constants built here from the report's own
-filter: the server never sends a template, so it can never make the connector read the rest of the house.
+The connector renders only `DEVICE_TEMPLATE`, `IDENTITY_TEMPLATE` and `INFO_TEMPLATE`, constants built here from the
+report's own filter: the server never sends a template, so it can never make the connector read the rest of the house.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from typing import Iterable, Mapping
 from . import messages
 from .clients import json_body
 from .context import Context
+from .device_info import FIELDS, REGISTRY_ATTRIBUTES, DeviceInfo, clean_device_info
 from .entities import BATTERY_DEVICE_CLASS, NUMBER_DEVICE_CLASS, PROBLEM_DEVICE_CLASS, RELAY_STATUS_LAST, SENSOR_DEVICE_CLASSES
 from .transport import TransportError
 
@@ -26,8 +27,8 @@ MISSING_REREAD_SECONDS = 50.0
 DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 MAX_DEVICE_NAME = 120
 # Every device class of these leaves: a switch of an AC's or a dehumidifier's own device is a compressor plug. A valve
-# (0.2.12) may be a pump.
-ANY_CLASS_DOMAINS = ("climate", "humidifier", "switch", "valve")
+# (0.2.12) may be a pump. A light (0.2.14) may take the Light role.
+ANY_CLASS_DOMAINS = ("climate", "humidifier", "light", "switch", "valve")
 # The identity of a device: each identifier pair HA gives, (integration domain, id), leaves as the domain and the
 # SHA-256 of this prefix, the domain, "|" and the id. The prefix names the scheme version; the raw id never leaves.
 IDENTITY_PREFIX = "crop-steering:device-identity:v1|"
@@ -85,20 +86,53 @@ def _identity_template() -> str:
     )
 
 
+def _registry_values(device: str) -> str:
+    return "[" + ", ".join(f"device_attr({device}, '{attribute}')" for attribute in REGISTRY_ATTRIBUTES) + "]"
+
+
+def _info_template() -> str:
+    # 0.2.13, rendered only while the server asks (`device_info_wanted`): the same sources, behind `if d`, and its own
+    # render, so a failure never costs the device map or the identities. One template for every HA version: HA's
+    # `device_attr` answers none for an attribute the device entry lacks (`model_id` before HA 2024.8,
+    # `parent_device_id` before 2026.11), and the values only leave through `tojson`, so a none is null, never the
+    # text «None». Since HA 2026.11, each channel of a multi-channel Smart Life plug sits on a child device with the
+    # four values null; then they come from its parent, whose id never leaves the template. `device_attr` raises on a
+    # non-text id, so the parent is read only behind `p is string`.
+    return (
+        "{%- set ns = namespace(pairs=[]) -%}"
+        "{%- for s in " + _sources() + " -%}"
+        "{%- set d = device_id(s.entity_id) -%}"
+        "{%- if d -%}"
+        "{%- set own = " + _registry_values("d") + " -%}"
+        "{%- set p = device_attr(d, 'parent_device_id') -%}"
+        "{%- if (own | reject('none') | list) or p is not string -%}"
+        "{%- set ns.pairs = ns.pairs + [(d, own)] -%}"
+        "{%- else -%}"
+        "{%- set ns.pairs = ns.pairs + [(d, " + _registry_values("p") + ")] -%}"
+        "{%- endif -%}"
+        "{%- endif -%}"
+        "{%- endfor -%}"
+        "{{ dict(ns.pairs) | tojson }}"
+    )
+
+
 DEVICE_TEMPLATE = _device_template()
 IDENTITY_TEMPLATE = _identity_template()
+INFO_TEMPLATE = _info_template()
 
 
 @dataclass(frozen=True)
 class DeviceMap:
     """`devices`: entity id → HA device id, None for an entity with no device; `names`: device id → its name;
     `dropped`: the entities whose entry had a bad device id, which a new read would drop again; `identities`: device
-    id → its hashed pairs, from the last good identity read of the process (empty before the first)."""
+    id → its hashed pairs, from the last good identity read of the process (empty before the first); `info`: device id
+    → its cleaned device info, from the last good info read while the server asks, or None (no key in the report)."""
 
     devices: Mapping[str, str | None]
     names: Mapping[str, str]
     dropped: frozenset[str] = frozenset()
     identities: Mapping[str, Identity] = field(default_factory=dict)
+    info: Mapping[str, DeviceInfo] | None = None
 
     def holds(self, entity_id: str) -> bool:
         """Whether this read saw the entity, kept or dropped: an entity it never saw appeared after it."""
@@ -175,12 +209,31 @@ def parse_identities(payload: object) -> dict[str, Identity] | None:
     return identities
 
 
+def parse_device_info(payload: object) -> dict[str, DeviceInfo] | None:
+    """The info template's answer, or None when its shape is wrong: each entry a list of the four values.
+
+    Every value is cleaned (`clean_device_value`), so a device whose four are null still has its entry, with four
+    nulls. An entry with a bad device id is dropped alone, as in the device map.
+    """
+    if not isinstance(payload, dict):
+        return None
+    infos: dict[str, DeviceInfo] = {}
+    for device_id, values in payload.items():
+        if not isinstance(values, list) or len(values) != len(FIELDS):
+            return None
+        if DEVICE_ID_RE.fullmatch(device_id):
+            infos[device_id] = clean_device_info(values)
+    return infos
+
+
 class DeviceMapReader:
     """The last good map, read at the first report and then at most every 600 s; a failure never stops a report.
 
     It is the only cache the connector keeps of what Home Assistant holds, and the one a sync drops (`invalidate`).
     Between two reads, an entity the map never saw makes the next report read it again (`fill_gaps`). Every good map
     read is followed by an identity read; a failed one keeps the identities of the last good one, in memory only.
+    While the server asks for the device info (`want_info`), the identity read is followed by an info read, which
+    keeps the last good info the same way.
     """
 
     def __init__(self, context: Context) -> None:
@@ -192,6 +245,9 @@ class DeviceMapReader:
         self._good_reads = 0
         self._identities: dict[str, Identity] = {}
         self._identity_failure_logged = False
+        self._info_wanted = False
+        self._info: dict[str, DeviceInfo] | None = None
+        self._info_failure_logged = False
 
     @property
     def invalidated(self) -> bool:
@@ -211,6 +267,24 @@ class DeviceMapReader:
         keys.
         """
         self._invalidated = True
+
+    @property
+    def info_wanted(self) -> bool:
+        return self._info_wanted
+
+    def want_info(self, wanted: bool) -> None:
+        """The server's `device_info_wanted` of the last accepted answer. False drops the info held in memory at once,
+        so no report carries it again; a flip to true invalidates the map, so the next report reads the map, the
+        identities and the info, and carries the info from that read on."""
+        if not wanted:
+            self._info_wanted = False
+            self._info = None
+            if self._map is not None and self._map.info is not None:
+                self._map = replace(self._map, info=None)
+            return
+        if not self._info_wanted:
+            self._info_wanted = True
+            self.invalidate()
 
     def current(self) -> DeviceMap | None:
         """The map for this report, read first when due or invalidated; None until one read succeeds."""
@@ -250,7 +324,9 @@ class DeviceMapReader:
         self._failing = False
         self._good_reads += 1
         self._refresh_identities()
-        self._map = replace(fresh, identities=self._identities)
+        if self._info_wanted:
+            self._refresh_info()
+        self._map = replace(fresh, identities=self._identities, info=self._info)
 
     def _refresh_identities(self) -> None:
         # The sync ack and `good_reads` follow the device map alone; this read only decides which identities ride on it.
@@ -260,6 +336,14 @@ class DeviceMapReader:
         elif not self._identity_failure_logged:
             self._identity_failure_logged = True
             self._context.log.warning(messages.DEVICE_IDENTITIES_FAILED.format(detail=detail))
+
+    def _refresh_info(self) -> None:
+        info, detail = self._read_info()
+        if info is not None:
+            self._info = info
+        elif not self._info_failure_logged:
+            self._info_failure_logged = True
+            self._context.log.warning(messages.DEVICE_INFO_FAILED.format(detail=detail))
 
     def _read(self) -> DeviceMap | None:
         try:
@@ -280,3 +364,14 @@ class DeviceMapReader:
             return None, f"HTTP {response.status}"
         identities = parse_identities(json_body(response))
         return (identities, "") if identities is not None else (None, "resposta inválida")
+
+    def _read_info(self) -> tuple[dict[str, DeviceInfo] | None, str]:
+        """The device info and an empty detail, or None and a detail with no value and no template output."""
+        try:
+            response = self._context.ha.post("/template", {"template": INFO_TEMPLATE})
+        except TransportError as error:
+            return None, error.kind
+        if response.status != 200:
+            return None, f"HTTP {response.status}"
+        info = parse_device_info(json_body(response))
+        return (info, "") if info is not None else (None, "resposta inválida")

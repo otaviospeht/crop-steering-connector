@@ -42,7 +42,8 @@ MAX_FILE_BYTES = 262_144
 MAX_INSTANT_TEXT = 64
 MAX_ATTEMPTS = 99
 MAX_EVENT_AGE_SECONDS = 2_592_000
-LIGHT_ENTITY_RE = re.compile(r"^switch\.[a-z0-9_]{1,200}$")
+# A light plug (`switch`) or, since 0.2.14, a smart bulb (`light`): the only entities the controller holds or switches.
+LIGHT_ENTITY_RE = re.compile(r"^(light|switch)\.[a-z0-9_]{1,200}$")
 STATES = ("on", "off")
 EVENT_KINDS = frozenset({"switched", "night_off", "failed", "expired"})
 VOID = "void"
