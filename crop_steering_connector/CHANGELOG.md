@@ -1,5 +1,13 @@
 # Mudanças
 
+## 0.2.15
+
+- Quando o Cropilot marca a hora de um comando, o Conector espera essa hora antes de mandá-lo ao aparelho, sem segurar
+  os outros comandos. Assim, num espaço com mais de um ar-condicionado ou desumidificador, os compressores não partem
+  todos juntos: entre duas partidas fica o intervalo que o Cropilot pediu, também quando o Conector volta a se conectar
+  e recebe vários comandos de uma vez. Um espaço com mais de um ar-condicionado ou desumidificador precisa desta versão
+  ou de uma mais nova.
+
 ## 0.2.14
 
 - Uma lâmpada inteligente pode ser a iluminação do espaço, como a tomada: o Conector mostra ao Cropilot se ela está

@@ -23,6 +23,7 @@ from .clients import Halted, describe, error_code, is_success, json_body
 from .context import Context
 from .pump_store import off_state
 from .reporting import utc_now_iso
+from .start_gap import MAX_WAITING, InvalidNotBefore, StartQueue, Waiting, not_before_of
 from .transport import CONNECT, Response, TransportError
 
 if TYPE_CHECKING:
@@ -65,10 +66,38 @@ class CommandLoop:
         self._handled_order: deque[str] = deque()
         # entity_id -> (monotonic time of a succeeded power_on of POWERED_DOMAINS, its `changed_states` state or None)
         self._power_on_marks: dict[str, tuple[float, dict | None]] = {}
+        # The commands waiting for their `not_before` (0.2.15), and the claim a waiting one woke the loop before.
+        self._waiting = StartQueue()
+        self._claim_at = 0.0
+        self._called_at: float | None = None
 
     # The claim
 
     def cycle(self) -> float:
+        """The waiting commands that are due, then one claim and its batch, unless the claim's time has not come;
+        returns the seconds until the next claim or the next waiting command, whichever comes first."""
+        context = self._context
+        self._run_waiting()
+        if context.halt.is_set():
+            self._waiting.clear()
+            return 0.0
+        now = context.clock.monotonic()
+        if now < self._claim_at:
+            delay = self._claim_at - now
+        elif len(self._waiting) >= MAX_WAITING:
+            context.log.warning(messages.WAITING_FULL.format(count=len(self._waiting)))
+            delay = CLAIM_INTERVAL_SECONDS
+        else:
+            delay = self._claim()
+            now = context.clock.monotonic()
+        due = self._waiting.due_at()
+        self._claim_at = 0.0
+        if due is None or now + delay <= due:
+            return delay
+        self._claim_at = now + delay
+        return max(0.0, due - now)
+
+    def _claim(self) -> float:
         """One claim and its batch; returns the seconds until the next claim."""
         context = self._context
         try:
@@ -76,6 +105,7 @@ class CommandLoop:
         except TransportError as error:
             return self._endpoint_failed(policy.CLAIM, self._claim_backoff, error.kind)
         received_at = context.clock.monotonic()
+        server_now = context.server_now()
         if not is_success(answer):
             return self._endpoint_refused(policy.CLAIM, self._claim_backoff, answer)
         payload = json_body(answer)
@@ -96,12 +126,51 @@ class CommandLoop:
             if command is None:
                 context.log.warning(messages.INVALID_COMMAND_ID)
                 continue
-            if not self.handle(command):
+            if not self._admit(command, server_now):
                 left = len(batch) - position - 1
                 if left and not context.halt.is_set():
                     context.log.warning(messages.BATCH_DROPPED.format(count=left))
                 break
         return 0.0
+
+    # The start gap (start_gap.py)
+
+    def _admit(self, command: Command, server_now: float) -> bool:
+        """Run a claimed command now, or queue it behind its `not_before` or behind a waiting command for its entity;
+        False when it ran and its result needed retries."""
+        context = self._context
+        if command.id in self._handled:
+            context.log.warning(messages.DUPLICATE_COMMAND.format(id=command.id))
+            return True
+        try:
+            instant = not_before_of(command, server_now)
+        except InvalidNotBefore:
+            self._remember(command.id)
+            self._refuse(command, "invalid_command")
+            return True
+        behind = self._waiting.latest_of(command.entity_id)
+        if instant is None and behind is None:
+            self._run_waiting()
+            return self.handle(command)
+        nominal = max(value for value in (instant, behind) if value is not None)
+        self._remember(command.id)
+        self._waiting.add(command, nominal, spaced=instant is not None)
+        label = {"id": command.id, "action": command.label_action, "entity": command.label_entity}
+        seconds = max(0, round(nominal - context.clock.monotonic()))
+        context.log.info(messages.COMMAND_WAITING.format(**label, seconds=seconds))
+        return True
+
+    def _run_waiting(self) -> None:
+        """Every waiting command that is due, head first; one past its deadline is refused by the checks."""
+        context = self._context
+        while not context.halt.is_set():
+            item: Waiting | None = self._waiting.pop_due(context.clock.monotonic())
+            if item is None:
+                return
+            self._called_at = None
+            self._run(item.command)
+            if self._called_at is not None:
+                self._waiting.called(item, self._called_at)
 
     # One command
 
@@ -112,18 +181,17 @@ class CommandLoop:
             context.log.warning(messages.DUPLICATE_COMMAND.format(id=command.id))
             return True
         self._remember(command.id)
+        return self._run(command)
+
+    def _run(self, command: Command) -> bool:
+        context = self._context
         wait = self._start_not_before - context.clock.monotonic()
         if wait > 0 and context.sleep(wait):
             return False
         try:
             spec, body, state = self._checks(command)
         except Refused as refusal:
-            context.log.warning(
-                messages.COMMAND_REFUSED.format(
-                    id=command.id, action=command.label_action, entity=command.label_entity, code=refusal.code
-                )
-            )
-            self._post_refusal(command, refusal.code)
+            self._refuse(command, refusal.code)
             return True
         if not self._start(command):
             return True
@@ -131,12 +199,16 @@ class CommandLoop:
         if watch is not None:
             # Just before the HA call, so an `on` read from here on belongs to this shot.
             watch.pulse_starting(command.entity_id, command.id, max_on_seconds(command), dose_seconds(command))
+        self._called_at = context.clock.monotonic()
         outcome, code, changed = self._call(spec.domain, spec.service, body)
         if watch is not None:
             if outcome == "succeeded":
                 watch.pulse_succeeded(command.entity_id, command.id)
             else:
                 watch.pulse_failed(command.entity_id, command.id)
+        if command.not_before is None and command.domain in POWERED_DOMAINS and command.action == "power_on":
+            # An unstamped start still counts for the gap of the next stamped one (start_gap.py).
+            self._waiting.started_unstamped(command.received_at, self._called_at)
         if outcome == "succeeded" and command.domain in POWERED_DOMAINS and command.action == "power_on":
             self._power_on_marks[command.entity_id] = (context.clock.monotonic(), changed.get(command.entity_id))
         self._follow_humidifier(command, state, outcome, code)
@@ -149,6 +221,14 @@ class CommandLoop:
             )
         )
         return self._post_started_result(command, outcome, code)
+
+    def _refuse(self, command: Command, code: str) -> None:
+        self._context.log.warning(
+            messages.COMMAND_REFUSED.format(
+                id=command.id, action=command.label_action, entity=command.label_entity, code=code
+            )
+        )
+        self._post_refusal(command, code)
 
     def _remember(self, command_id: str) -> None:
         self._handled.add(command_id)

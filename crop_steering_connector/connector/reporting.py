@@ -35,6 +35,7 @@ from .context import Context
 from .devices import DeviceMapReader
 from .entities import ClimateReadings, build_report, report_entities
 from .light_control import compressor_switches, markers_of, report_keys
+from .light_store import parse_instant
 from .pump_store import PUMP_ENTITY_RE, PumpEvent, is_max_on
 from .refresh import SensorRefresher
 from .transport import Response, TransportError
@@ -236,6 +237,7 @@ class ReportLoop:
         return self._refused(answer)
 
     def _accepted(self, answer: Response, sent: int) -> float:
+        received = self._context.clock.monotonic()
         watch = self._context.pump_watch
         if watch is not None and self._sent_events:
             # Any 2xx took the events, whatever the body says.
@@ -267,6 +269,9 @@ class ReportLoop:
         if watch is not None:
             # The pumps first, so a pulse_on the new allowlist allows always finds its pump.
             watch.replace_list(_parse_pumps(entries))
+        server_time = parse_instant(data.get("server_time"))
+        if server_time is not None:
+            self._context.server_contact(server_time, received)
         self._context.allowlist.replace(parsed)
         if light is not None:
             # A light marker is checked per entity: a bad one never makes the answer invalid.

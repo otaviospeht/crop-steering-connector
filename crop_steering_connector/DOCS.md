@@ -33,6 +33,9 @@ umidade e comanda o ar-condicionado, o desumidificador, o umidificador e as toma
   função, ele só lê o estado dela, a não ser para desligar a bomba por segurança. O ar-condicionado, o desumidificador
   e a tomada escolhida como desumidificador do espaço seguem a proteção de 10 minutos do Cropilot.
 - No desumidificador que aceita umidade programada, o Cropilot muda essa umidade em vez de ligar e desligar o aparelho.
+- Quando o Cropilot marca a hora de um comando, o Conector espera essa hora antes de mandá-lo ao aparelho, sem segurar
+  os outros. Assim, num espaço com mais de um ar-condicionado ou desumidificador, os compressores não partem todos
+  juntos, também quando o Conector volta a se conectar e recebe vários comandos de uma vez.
 - O exaustor entra numa tomada só para conferir os pulsos que você programa no timer de ciclo dela, no app Smart Life:
   o Cropilot nunca liga nem desliga o exaustor sozinho. A bomba de rega entra só pela rega automática, com o pulso
   gravado na tomada: veja “Bomba de rega”. O umidificador entra só na função Umidificador de um espaço: veja

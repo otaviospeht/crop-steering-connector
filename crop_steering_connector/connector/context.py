@@ -82,6 +82,21 @@ class Context:
         self.ha_version = "unknown"
         self._lock = threading.Lock()
         self._last_v14: float | None = None
+        # (server_time of the last accepted report answer, monotonic moment it arrived), for `not_before` (0.2.15).
+        self._server_anchor: tuple[float, float] | None = None
+
+    def server_contact(self, server_time: float, received: float) -> None:
+        with self._lock:
+            self._server_anchor = (server_time, received)
+
+    def server_now(self) -> float:
+        """The server's time now: the last `server_time` plus the monotonic clock since it, or the wall clock before
+        the first report answer."""
+        with self._lock:
+            anchor = self._server_anchor
+        if anchor is None:
+            return self.clock.time()
+        return anchor[0] + (self.clock.monotonic() - anchor[1])
 
     def sleep(self, seconds: float) -> bool:
         """True when the connector halted during the sleep."""

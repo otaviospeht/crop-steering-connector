@@ -114,6 +114,8 @@ class Command:
     data: Any
     expires_in_seconds: Any
     received_at: float
+    # Since 0.2.15: the instant before which the command never reaches HA (start_gap.py); None runs at once.
+    not_before: Any = None
 
     @property
     def domain(self) -> str:
@@ -144,6 +146,7 @@ def parse_command(raw: Any, received_at: float) -> Command | None:
         data=raw.get("data"),
         expires_in_seconds=raw.get("expires_in_seconds"),
         received_at=received_at,
+        not_before=raw.get("not_before"),
     )
 
 
