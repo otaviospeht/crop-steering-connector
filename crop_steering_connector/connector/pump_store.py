@@ -3,6 +3,10 @@
 It holds the pump list of the last report answer, the open cycles and the events not yet accepted by the
 Cropilot, so the watch resumes from it after a restart, a 401 or with the Cropilot unreachable. An event keeps
 the instant of its end here; the report turns it into an age.
+
+Since 0.2.16 a cycle of the backup watering (pump_backup.py) carries `backup_key`, the `irrigation_shots` key of its
+pulse (light date, slot index, pulse index), in place of a command id. The key is optional and written only on such a
+cycle, so the file stays at version 1 and a 0.2.15 file reads as before.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import re
 import stat
 import tempfile
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +34,13 @@ OFF_STATES = {"switch": "off", "valve": "closed"}
 COMMAND_ID_RE = re.compile(r"^[0-9A-Za-z]{26}$")
 EVENT_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 MAX_ON_SECONDS_RANGE = (20, 915)
+LIGHT_DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+MAX_SLOT_INDEX = 255
+MAX_PULSE_INDEX = 5
+BACKUP_KEY_FIELDS = ("light_date", "slot_index", "pulse_index")
+
+# (light date, slot index, pulse index): the key of one backup pulse in `irrigation_shots`.
+BackupKey = tuple[str, int, int]
 
 
 class InvalidPumpFile(ValueError):
@@ -46,6 +58,13 @@ class Cycle:
     off_failed_sent: bool = False
     # Since 0.2.12, the dose the watch cuts the shot at; the pump's own pulse is then the backup.
     dose_seconds: int | None = None
+    # Since 0.2.16, the key of a backup watering pulse, which has no command id.
+    backup_key: BackupKey | None = None
+
+    @property
+    def in_shot(self) -> bool:
+        """An on the Cropilot or the backup watering started, never one outside a shot."""
+        return self.command_id is not None or self.backup_key is not None
 
 
 @dataclass(frozen=True)
@@ -100,6 +119,39 @@ def _optional_command_id(value: Any) -> bool:
     return value is None or (isinstance(value, str) and COMMAND_ID_RE.fullmatch(value) is not None)
 
 
+def is_light_date(value: Any) -> bool:
+    """A `YYYY-MM-DD` that is a real date."""
+    if not isinstance(value, str) or LIGHT_DATE_RE.fullmatch(value) is None:
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def is_backup_key(value: Any) -> bool:
+    if not isinstance(value, tuple) or len(value) != 3:
+        return False
+    light_date, slot_index, pulse_index = value
+    return (
+        is_light_date(light_date)
+        and _is_count(slot_index)
+        and slot_index <= MAX_SLOT_INDEX
+        and _is_count(pulse_index)
+        and pulse_index <= MAX_PULSE_INDEX
+    )
+
+
+def _backup_key(raw: Any) -> BackupKey | None:
+    if raw is None:
+        return None
+    _require(isinstance(raw, dict) and set(raw) == set(BACKUP_KEY_FIELDS), "cycle backup_key")
+    key = (raw["light_date"], raw["slot_index"], raw["pulse_index"])
+    _require(is_backup_key(key), "cycle backup_key value")
+    return key
+
+
 def _require(condition: bool, what: str) -> None:
     if not condition:
         raise InvalidPumpFile(what)
@@ -130,6 +182,8 @@ def _cycles(raw: Any) -> dict[str, Cycle]:
         _require(isinstance(item.get("off_failed_sent"), bool), "cycle off_failed_sent")
         dose = item.get("dose_seconds")
         _require(dose is None or (_is_count(dose) and dose <= MAX_ON_SECONDS_RANGE[1]), "cycle dose_seconds")
+        backup_key = _backup_key(item.get("backup_key"))
+        _require(backup_key is None or item["command_id"] is None, "cycle with a command and a backup key")
         cycles[entity_id] = Cycle(
             started_at=float(item["started_at"]),
             command_id=item["command_id"],
@@ -137,6 +191,7 @@ def _cycles(raw: Any) -> dict[str, Cycle]:
             tries=item["tries"],
             off_failed_sent=item["off_failed_sent"],
             dose_seconds=dose,
+            backup_key=backup_key,
         )
     return cycles
 
@@ -177,21 +232,25 @@ def parse(document: Any) -> PumpFile:
     )
 
 
+def _cycle_document(cycle: Cycle) -> dict:
+    document = {
+        "started_at": cycle.started_at,
+        "command_id": cycle.command_id,
+        "limit_seconds": cycle.limit_seconds,
+        "tries": cycle.tries,
+        "off_failed_sent": cycle.off_failed_sent,
+        "dose_seconds": cycle.dose_seconds,
+    }
+    if cycle.backup_key is not None:
+        document["backup_key"] = dict(zip(BACKUP_KEY_FIELDS, cycle.backup_key))
+    return document
+
+
 def serialize(content: PumpFile) -> dict:
     return {
         "version": FILE_VERSION,
         "pumps": [{"entity_id": entity_id, "max_on_seconds": max_on} for entity_id, max_on in content.pumps.items()],
-        "cycles": {
-            entity_id: {
-                "started_at": cycle.started_at,
-                "command_id": cycle.command_id,
-                "limit_seconds": cycle.limit_seconds,
-                "tries": cycle.tries,
-                "off_failed_sent": cycle.off_failed_sent,
-                "dose_seconds": cycle.dose_seconds,
-            }
-            for entity_id, cycle in content.cycles.items()
-        },
+        "cycles": {entity_id: _cycle_document(cycle) for entity_id, cycle in content.cycles.items()},
         "events": [
             {
                 "id": event.id,

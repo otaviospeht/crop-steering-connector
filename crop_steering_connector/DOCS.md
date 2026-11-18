@@ -100,6 +100,27 @@ sendo o pulso da tomada.
 Com o conector 0.2.12 ou mais novo, o Cropilot lê na tomada o estado ao ligar, quando o Home Assistant o mostra: ele
 deve ficar em “Desligado” no app Smart Life, para a bomba não ligar sozinha quando a energia volta.
 
+## Rega de reserva
+
+Com o Conector 0.2.16 ou mais novo, o Cropilot manda junto com cada resposta os disparos da rega automática de um dia
+à frente, com a dose de cada um. Se a plataforma ficar fora do ar e não mandar um disparo, o Conector espera 5 minutos
+depois do horário (o Cropilot pode marcar uma espera maior) e dá esse disparo sozinho: liga a bomba e a desliga na
+dose, com o pulso gravado na tomada ainda de reserva. Ele nunca faz sozinho o flush nem o disparo de teste e evita
+repetir um disparo: num caso raro, quando a confirmação de um disparo se perde no caminho, o Cropilot avisa para você
+conferir a água dos vasos. Quando o contato volta, os disparos que ele deu aparecem no histórico do Cropilot.
+
+Antes de cada pulso, o Conector confere no Home Assistant o pulso gravado na tomada: se ele não for o que o Cropilot
+espera, porque você o mudou no app Smart Life, o Conector não liga a bomba. Ele também não liga a bomba que já estiver
+ligada, nem quando o relógio do Home Assistant está mais de 5 minutos diferente da hora do Cropilot.
+
+Os horários valem por no máximo um dia, ou até o fim do plano, e o Conector os apaga quando o Cropilot avisa, por
+exemplo depois de você desligar a rega automática ou registrar a colheita, quando o pareamento acaba e quando ele é
+pareado de novo. Se o Conector estiver sem contato com o Cropilot quando você desligar a rega automática, ele pode
+seguir os horários guardados até eles acabarem: para parar antes, tire a bomba da tomada. Depois de reiniciar, o
+Conector só volta a regar sozinho depois de falar com o Cropilot de novo.
+
+Sem internet na casa, a tomada Smart Life não recebe o comando: nada liga a bomba, e só o pulso gravado nela a desliga.
+
 ## Umidificador
 
 O Cropilot liga o umidificador abaixo da umidade mínima da fase e desliga no ponto definido para a fase, só na germinação, na

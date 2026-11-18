@@ -20,6 +20,11 @@ A 0.2.13 report carries `device_info` right after `device_identities` only while
 `device_info_wanted` true, and only after a good info read in this process (devices.py): an answer without that true
 drops the info at once, as a 403 refusal does, and a flip to true invalidates the map, so the next report, brought
 forward, reads it.
+A 0.2.16 report always carries the backup watering's keys right after `light_events`: `pump_backup`, the schedules it
+holds with each pump's slot in progress (`running`), built after /states so it and the pump's state describe the same
+moment, and `pump_backup_events`, taken before /states as the pump's events are, the oldest that fit beside it in
+16384 bytes. They leave the queue only by the answer's `pump_backup_accepted`, never on a bare 2xx. Every accepted
+answer goes to the backup watering with its pump entries; an answer the connector cannot read drops its schedules.
 """
 
 from __future__ import annotations
@@ -46,6 +51,8 @@ if TYPE_CHECKING:
     from .humidifier_watch import HumidifierWatch
     from .light_control import LightControl
     from .light_store import LightEvent
+    from .pump_backup import PumpBackup
+    from .pump_backup_store import BackupEvent
 
 REPORT_INTERVAL_SECONDS = 60.0
 REPORT_JITTER_SECONDS = 5.0
@@ -86,11 +93,14 @@ class ReportLoop:
         context: Context,
         humidifier_watch: HumidifierWatch | None = None,
         light_control: LightControl | None = None,
+        pump_backup: PumpBackup | None = None,
     ) -> None:
         self._context = context
         self._humidifier_watch = humidifier_watch
         self._light = light_control
+        self._backup = pump_backup
         self._sent_light_events: list[LightEvent] = []
+        self._sent_backup_events: list[BackupEvent] = []
         self._light_reads = 0
         self._compressors: frozenset[str] = frozenset()
         self._device_of: dict[str, str | None] | None = None
@@ -142,6 +152,7 @@ class ReportLoop:
             or (watch is not None and watch.events_waiting())
             or (humidifiers is not None and humidifiers.events_waiting())
             or (self._light is not None and self._light.events_waiting())
+            or (self._backup is not None and self._backup.events_waiting())
         )
 
     def cycle(self) -> float:
@@ -169,6 +180,9 @@ class ReportLoop:
         self._sent_humidifier_events = humidifiers.snapshot_events() if humidifiers is not None else []
         light = self._light
         self._sent_light_events = light.snapshot_events() if light is not None else []
+        backup = self._backup
+        backup_candidates = backup.snapshot_events() if backup is not None else []
+        self._sent_backup_events = []
         try:
             response = context.ha.get("/states")
         except TransportError as error:
@@ -191,6 +205,10 @@ class ReportLoop:
         control, light_events, self._sent_light_events = report_keys(
             light.schedules() if light is not None else [], self._sent_light_events, now
         )
+        held, backup_events = [], []
+        if backup is not None:
+            # After /states: `running` describes the moment the pump's state was read, or a later one.
+            held, backup_events, self._sent_backup_events = backup.report_keys(backup_candidates, now)
         envelope = {
             "connector_version": __version__,
             "ha_version": context.ha_version,
@@ -200,6 +218,8 @@ class ReportLoop:
             "humidifier_events": [event.wire(now) for event in self._sent_humidifier_events],
             "light_control": control,
             "light_events": light_events,
+            "pump_backup": held,
+            "pump_backup_events": backup_events,
         }
         self._ack_sent = self._ack is not None
         if self._ack is not None:
@@ -257,11 +277,20 @@ class ReportLoop:
             self._ack_sent = False
         payload = json_body(answer)
         data = payload.get("data") if isinstance(payload, dict) else None
+        backup = self._backup
+        if backup is not None:
+            # Only the ids the answer lists leave: a day's backlog may take several reports.
+            accepted = data.get("pump_backup_accepted") if isinstance(data, dict) else None
+            backup.acknowledge(accepted, [event.event_id for event in self._sent_backup_events])
+        self._sent_backup_events = []
         entries = data.get("allowlist") if isinstance(data, dict) else None
         parsed = _parse_allowlist(entries)
         if parsed is None:
-            # Fail closed: an answer the connector cannot read never keeps the device info going.
+            # Fail closed: an answer the connector cannot read never keeps the device info going, nor a schedule of
+            # the backup watering.
             self._devices.want_info(False)
+            if backup is not None:
+                backup.drop_all()
             self._accepted_last = False
             return self._failed("resposta inválida")
         # Only the JSON true asks; an older server sends no key, which is false.
@@ -283,6 +312,15 @@ class ReportLoop:
                 [entity_id for entity_id, _ in _parse_pumps(entries)],
                 self._device_of,
             )
+        if backup is not None:
+            # After the pump list, so the watch already lists each pump the schedules name.
+            backup.replace(
+                entries,
+                data.get("pump_backup_supported") is True,
+                data.get("server_time"),
+                self._compressors,
+                self._device_of,
+            )
         if data.get("sync_requested") is True:
             request_id = data.get("sync_request_id")
             self._sync(request_id if isinstance(request_id, str) and SYNC_REQUEST_ID_RE.fullmatch(request_id) else None)
@@ -302,6 +340,8 @@ class ReportLoop:
         self._device_of = dict(device_map.devices)
         if self._light is not None:
             self._light.devices(self._device_of)
+        if self._backup is not None:
+            self._backup.devices(self._device_of)
 
     def _sync(self, request_id: str | None) -> None:
         """`sync_requested`: drop every cache of Home Assistant, so the next report, brought forward, reads it all
@@ -341,8 +381,11 @@ class ReportLoop:
             context.stop(messages.V13_REVOKED, forget_token=True)
             return 0.0
         if action == policy.BACKOFF_300:
-            # A 403: no device info while the server refuses; only a later accepted true asks for it again.
+            # A 403: no device info while the server refuses; only a later accepted true asks for it again. And no
+            # backup watering: the transport drops the schedules on a 403 of any endpoint, and this one does too.
             self._devices.want_info(False)
+            if self._backup is not None:
+                self._backup.forbidden()
             context.forbidden()
             return self._backoff.ceiling()
         if action == policy.ALLOWLISTED_ONLY:

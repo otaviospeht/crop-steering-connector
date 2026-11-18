@@ -251,6 +251,9 @@ class CommandLoop:
         if command.action == "pulse_on" and (context.pump_watch is None or not context.pump_watch.is_pump(command.entity_id)):
             # A pulse the watch would not follow is never sent.
             raise Refused("not_allowlisted")
+        if command.action == "pulse_on" and context.pump_watch.backup_busy(command.entity_id):
+            # Since 0.2.16 a slot the backup watering started finishes alone, the gaps between its pulses included.
+            raise Refused("pump_busy")
         try:
             spec = service_spec(command)
         except InvalidCommand:

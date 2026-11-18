@@ -7,6 +7,12 @@ never stop it. It never calls the Cropilot. Its only HA service is `switch.turn_
 pump list or of an open cycle, or `valve.close_valve` for a valve pump (0.2.12): the single HA call the
 connector makes without the Cropilot's start of a command. The list, the open cycles and the events live in the pump file, so a restart resumes from it before
 any Cropilot call.
+
+Since 0.2.16 the backup watering (pump_backup.py) starts a pulse of its own with `backup_pulse_starting`, keyed by the
+pulse's `irrigation_shots` key instead of a command id. The watch cuts it as a Cropilot shot (the dose, `max_on`, the
+boot rule, never an `outside_off`), and a restart in the middle of it is always a `boot_off`. Such a cycle never
+becomes a `pump_events` item: its end and its `off_failed` go to the backup watering's sink, before the pump file is
+written, so a crash between the two writes repeats the end, which the sink ignores, and never loses it.
 """
 
 from __future__ import annotations
@@ -17,13 +23,26 @@ import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from . import messages
 from .clients import HomeAssistantClient, json_body
 from .context import Clock
-from .pump_store import MAX_EVENTS, PUMP_ENTITY_RE, Cycle, PumpEvent, PumpFile, PumpStore, is_max_on, off_state
+from .pump_store import (
+    MAX_EVENTS,
+    PUMP_ENTITY_RE,
+    BackupKey,
+    Cycle,
+    PumpEvent,
+    PumpFile,
+    PumpStore,
+    is_max_on,
+    off_state,
+)
 from .transport import Transport, TransportError
+
+# (entity id, backup key, kind, on seconds or None, ended at, attempts): a backup cycle's end or `off_failed`.
+BackupSink = Callable[[str, BackupKey, str, "int | None", float, int], None]
 
 POLL_HOT_SECONDS = 1.0
 POLL_IDLE_SECONDS = 5.0
@@ -35,6 +54,8 @@ OFF_FAILED_AFTER_TRIES = 3
 ERROR_LOG_INTERVAL_SECONDS = 60.0
 UNAVAILABLE_STATES = frozenset({"unavailable", "unknown"})
 OFF_SERVICES = {"switch": "/services/switch/turn_off", "valve": "/services/valve/close_valve"}
+# A valve stays out of the dose cut, so out of the backup watering: only a plug takes a backup pulse.
+BACKUP_PUMP_PREFIX = "switch."
 WHERE = "bomba"
 # The watch's off at the dose closes the shot as a normal end.
 DOSE_CUT = "ended"
@@ -50,12 +71,17 @@ CLOSING_LINES = {
 
 @dataclass
 class _InFlight:
-    """A `pulse_on` from just before its HA call until 30 s after its success (the attach window)."""
+    """A `pulse_on`, or a backup pulse, from just before its HA call until 30 s after its success (the attach
+    window)."""
 
-    command_id: str
+    command_id: str | None
     max_on_seconds: int
     until: float
     dose_seconds: int | None = None
+    backup_key: BackupKey | None = None
+
+    def same(self, command_id: str | None, backup_key: BackupKey | None) -> bool:
+        return (self.command_id, self.backup_key) == (command_id, backup_key)
 
 
 @dataclass
@@ -109,6 +135,11 @@ class PumpWatch:
         self._cuts: dict[str, _Cut] = {}
         self._last_read: dict[str, float] = {}
         self._error_logged: dict[str, float] = {}
+        self._backup_sink: BackupSink | None = None
+        # The backup watering's answer to «a slot of yours is open on this pump», its gaps included.
+        self._backup_slot_open: Callable[[str], bool] | None = None
+        # A backup cycle that ended before the backup watering attached, handed over at the attach.
+        self._backup_waiting: list[tuple[str, BackupKey, str, int | None, float, int]] = []
         content = self._store.read()
         if content is None:
             log.warning(messages.PUMP_FILE_UNREADABLE)
@@ -179,17 +210,87 @@ class PumpWatch:
                 self._persist()
         self._wake.set()
 
-    def pulse_succeeded(self, entity_id: str, command_id: str) -> None:
+    def pulse_succeeded(self, entity_id: str, command_id: str | None, backup_key: BackupKey | None = None) -> None:
         with self._lock:
             flight = self._in_flight.get(entity_id)
-            if flight is not None and flight.command_id == command_id:
+            if flight is not None and flight.same(command_id, backup_key):
                 flight.until = self._clock.monotonic() + ATTACH_WINDOW_SECONDS
 
-    def pulse_failed(self, entity_id: str, command_id: str) -> None:
+    def pulse_failed(self, entity_id: str, command_id: str | None, backup_key: BackupKey | None = None) -> None:
         with self._lock:
             flight = self._in_flight.get(entity_id)
-            if flight is not None and flight.command_id == command_id:
+            if flight is not None and flight.same(command_id, backup_key):
                 del self._in_flight[entity_id]
+
+    # Calls from the backup watering (pump_backup.py), never under its lock
+
+    def attach_backup(self, sink: BackupSink, slot_open: Callable[[str], bool] | None = None) -> None:
+        """The backup watering's sink, called under this watch's lock, and its slot check, called outside it; a backup
+        end queued before goes to the sink now."""
+        with self._lock:
+            self._backup_sink = sink
+            self._backup_slot_open = slot_open
+            waiting, self._backup_waiting = self._backup_waiting, []
+            for item in waiting:
+                self._hand_backup(*item)
+
+    def backup_busy(self, entity_id: str) -> bool:
+        """A backup pulse is under way on the pump, in its attach window or open as a cycle, or the backup watering has
+        a slot open on it, the gaps between its pulses included: a Cropilot `pulse_on` is refused until the slot ends."""
+        now = self._clock.monotonic()
+        with self._lock:
+            cycle = self._cycles.get(entity_id)
+            flight = self._in_flight.get(entity_id)
+            if cycle is not None and cycle.backup_key is not None:
+                return True
+            if flight is not None and flight.backup_key is not None and now <= flight.until:
+                return True
+            slot_open = self._backup_slot_open
+        return slot_open is not None and slot_open(entity_id)
+
+    def listed_max_on(self, entity_id: str) -> int | None:
+        """The pump's `max_on_seconds` in the last list, or None when it is not listed or has none."""
+        with self._lock:
+            return self._pumps.get(entity_id)
+
+    def busy(self, entity_id: str) -> bool:
+        """A cycle is open on the pump, or a shot or a backup pulse is about to reach it."""
+        now = self._clock.monotonic()
+        with self._lock:
+            flight = self._in_flight.get(entity_id)
+            return entity_id in self._cycles or (flight is not None and now <= flight.until)
+
+    def backup_pending(self, entity_id: str, key: BackupKey) -> bool:
+        """The backup pulse of `key` is still in its attach window or open as a cycle."""
+        now = self._clock.monotonic()
+        with self._lock:
+            cycle = self._cycles.get(entity_id)
+            if cycle is not None and cycle.backup_key == key:
+                return True
+            flight = self._in_flight.get(entity_id)
+            return flight is not None and flight.backup_key == key and now <= flight.until
+
+    def backup_pulse_starting(self, entity_id: str, key: BackupKey, max_on_seconds: int, dose_seconds: int) -> bool:
+        """Just before the backup's HA call: True when the watch now follows the pulse. False, with nothing changed,
+        when the pump is not on the list with this `max_on_seconds` or a cycle or another shot is under way on it."""
+        now = self._clock.monotonic()
+        with self._lock:
+            flight = self._in_flight.get(entity_id)
+            if (
+                not PUMP_ENTITY_RE.fullmatch(entity_id)
+                or not entity_id.startswith(BACKUP_PUMP_PREFIX)
+                or not self.booted.is_set()
+                or self._pumps.get(entity_id) != max_on_seconds
+                or not is_max_on(max_on_seconds)
+                or entity_id in self._cycles
+                or (flight is not None and now <= flight.until)
+            ):
+                return False
+            self._in_flight[entity_id] = _InFlight(
+                None, max_on_seconds, now + ATTACH_WINDOW_SECONDS, dose_seconds, backup_key=key
+            )
+        self._wake.set()
+        return True
 
     def events_waiting(self) -> bool:
         with self._lock:
@@ -304,6 +405,7 @@ class PumpWatch:
             cycle = self._open(entity_id, changed_at, boot)
         elif boot:
             self._boot_pending.discard(entity_id)
+            # A Cropilot shot inside its limit resumes; a backup pulse never does: the restart ends its slot.
             within = cycle.command_id is not None and cycle.tries == 0
             if not (within and self._clock.time() - cycle.started_at < self._limit(entity_id, cycle)):
                 self._cuts[entity_id] = _Cut("boot_off")
@@ -313,7 +415,7 @@ class PumpWatch:
             # The dose off did not take and the pump ran on to its limit: from here it is a forced off.
             self._cuts[entity_id].kind = "forced_off"
         if entity_id not in self._cuts and past_limit:
-            self._cuts[entity_id] = _Cut("forced_off" if cycle.command_id is not None else "outside_off")
+            self._cuts[entity_id] = _Cut("forced_off" if cycle.in_shot else "outside_off")
         if entity_id not in self._cuts and cycle.dose_seconds is not None and elapsed >= cycle.dose_seconds:
             # The dose is reached: the shot ends here, and the pump's own timer was only the backup.
             self._cuts[entity_id] = _Cut(DOSE_CUT)
@@ -328,6 +430,7 @@ class PumpWatch:
                 command_id=flight.command_id,
                 limit_seconds=flight.max_on_seconds,
                 dose_seconds=flight.dose_seconds,
+                backup_key=flight.backup_key,
             )
         else:
             # Outside a shot the limit is zero: cut at the first read.
@@ -373,20 +476,25 @@ class PumpWatch:
         if cut is not None:
             # The dose off that needed a retry was not a normal end.
             kind = "forced_off" if cut.kind == DOSE_CUT and cycle.tries > 1 else cut.kind
-        elif cycle.command_id is not None:
+        elif cycle.in_shot:
             kind = "forced_off" if cycle.tries else "ended"
         else:
             kind = "outside_off"
         on_seconds = max(0, round(off_at - cycle.started_at))
         del self._cycles[entity_id]
         flight = self._in_flight.get(entity_id)
-        if flight is not None and flight.command_id == cycle.command_id:
+        if flight is not None and flight.same(cycle.command_id, cycle.backup_key):
             del self._in_flight[entity_id]
         self._queue(entity_id, kind, cycle, on_seconds, off_at)
         if kind in CLOSING_LINES:
             self._log.warning(CLOSING_LINES[kind].format(entity=entity_id))
 
     def _queue(self, entity_id: str, kind: str, cycle: Cycle, on_seconds: int | None, ended_at: float) -> None:
+        if cycle.backup_key is not None:
+            # The backup watering's sink writes its file first; the pump file follows, so its end is never lost.
+            self._hand_backup(entity_id, cycle.backup_key, kind, on_seconds, ended_at, cycle.tries)
+            self._persist()
+            return
         self._events.append(
             PumpEvent(
                 id=str(uuid.uuid4()),
@@ -403,6 +511,20 @@ class PumpWatch:
             self._events = self._events[dropped:]
             self._log.warning(messages.PUMP_EVENTS_DROPPED.format(count=dropped))
         self._persist()
+
+    def _hand_backup(
+        self, entity_id: str, key: BackupKey, kind: str, on_seconds: int | None, ended_at: float, attempts: int
+    ) -> None:
+        sink = self._backup_sink
+        if sink is None:
+            self._backup_waiting = [*self._backup_waiting, (entity_id, key, kind, on_seconds, ended_at, attempts)][
+                -MAX_EVENTS:
+            ]
+            return
+        try:
+            sink(entity_id, key, kind, on_seconds, ended_at, attempts)
+        except Exception as error:  # noqa: BLE001 - the off never waits for the backup watering's bookkeeping
+            self._log_error(error)
 
     def _persist(self) -> None:
         content = PumpFile(

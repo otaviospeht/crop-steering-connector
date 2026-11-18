@@ -1,5 +1,19 @@
 # Mudanças
 
+## 0.2.16
+
+- Rega de reserva: junto com cada resposta, o Cropilot manda ao Conector os disparos da rega automática de um dia à
+  frente, com a dose de cada um. Se a plataforma ficar fora do ar e não mandar um disparo, o Conector espera 5 minutos
+  depois do horário e dá esse disparo sozinho, desligando a bomba na dose, com o pulso gravado na tomada ainda de
+  reserva. Ele nunca faz sozinho o flush nem o disparo de teste e evita repetir um disparo: num caso raro, quando a
+  confirmação de um disparo se perde no caminho, o Cropilot avisa para você conferir a água dos vasos. Quando o contato
+  volta, os disparos que ele deu aparecem no histórico do Cropilot.
+- Antes de cada pulso, o Conector confere no Home Assistant o pulso gravado na tomada: se ele não for o que o Cropilot
+  espera, o Conector não liga a bomba. Sem internet na casa, a tomada Smart Life não recebe o comando: nada liga a
+  bomba, e só o pulso gravado nela a desliga.
+- Isso só passa a valer quando o Cropilot mandar esses horários. Antes de voltar para a 0.2.15, espere o Conector falar
+  com o Cropilot de novo: os disparos que ele deu sozinho e ainda não mandou se perdem na volta.
+
 ## 0.2.15
 
 - Quando o Cropilot marca a hora de um comando, o Conector espera essa hora antes de mandá-lo ao aparelho, sem segurar

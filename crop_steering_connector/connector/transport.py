@@ -50,15 +50,23 @@ class Transport(Protocol):
 
 
 class AnsweredTransport:
-    """A transport that tells `on_success` of every 2xx it returns; the Cropilot client's only, never HA's.
+    """A transport that tells `on_success` of every 2xx it returns and `on_answer` of every HTTP answer, before the
+    caller reads it; the Cropilot client's only, never HA's. Since 0.2.16 it is always installed.
 
-    The humidifier watch (0.2.7) counts its 20 minutes of silence from the last of them, so a 3xx, a 4xx, a 5xx, a
-    timeout or no network never moves it.
+    The humidifier watch (0.2.7) counts its 20 minutes of silence from the last 2xx, so a 3xx, a 4xx, a 5xx, a timeout
+    or no network never moves it. The backup watering (0.2.16) places each 2xx in the server's time and drops its
+    schedules on a 403; a timeout or no network reaches neither, since no answer came.
     """
 
-    def __init__(self, inner: Transport, on_success: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        inner: Transport,
+        on_success: Callable[[], None] | None = None,
+        on_answer: Callable[[Response], None] | None = None,
+    ) -> None:
         self._inner = inner
         self._on_success = on_success
+        self._on_answer = on_answer
 
     def request(
         self,
@@ -70,8 +78,10 @@ class AnsweredTransport:
         max_bytes: int,
     ) -> Response:
         response = self._inner.request(method, url, headers, body, timeout, max_bytes)
-        if 200 <= response.status < 300:
+        if 200 <= response.status < 300 and self._on_success is not None:
             self._on_success()
+        if self._on_answer is not None:
+            self._on_answer(response)
         return response
 
 

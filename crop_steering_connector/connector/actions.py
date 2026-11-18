@@ -27,6 +27,10 @@ Since 0.2.14 a smart bulb (`light`) in the Light role is turned on and off like 
 and `power_off` is `light.turn_off`, body exactly `{entity_id}` (no data key is accepted, so never a brightness, a
 color, an effect, a flash or a transition), and the light controller's table holds `light.turn_on` and
 `light.turn_off` with that same body.
+Since 0.2.16 the backup watering (pump_backup.py) turns a pump plug on by itself, only for a pulse of the schedule the
+Cropilot sent, with the server silent: its own closed table, `LOCAL_PUMP_SERVICES`, holds only `switch.turn_on`, body
+exactly `{entity_id}`. The pump watch turns it off at the dose, as a Cropilot shot. It is not in `ACTIONS`, so no
+claimed command reaches it, and no server answer names a service or adds a key.
 """
 
 from __future__ import annotations
@@ -100,6 +104,9 @@ LOCAL_LIGHT_SERVICES: dict[tuple[str, str], str] = {
     ("light", "on"): "light/turn_on",
     ("light", "off"): "light/turn_off",
 }
+
+# The backup watering's only HA service, by entity domain; used by pump_backup.py alone. A valve never enters it.
+LOCAL_PUMP_SERVICES: dict[str, str] = {"switch": "switch/turn_on"}
 
 
 class InvalidCommand(Exception):

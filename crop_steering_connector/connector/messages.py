@@ -2,7 +2,8 @@
 
 The lines of `APPROVED`, `PUMP_APPROVED`, `HUMIDIFIER_APPROVED` and `LIGHT_APPROVED` are approved texts, kept
 verbatim, and DOCS.md explains each line of `APPROVED`. The other lines carry only codes, counts and entity ids for
-the Cropilot team; they never carry a token, the pairing code, a payload or a device name.
+the Cropilot team; they never carry a token, the pairing code, a payload or a device name. `PUMP_BACKUP` (0.2.16) are
+the backup watering's lines: one per slot started and ended, with the entity id and the shot's key only.
 """
 
 V13_REVOKED = (
@@ -143,6 +144,54 @@ LIGHT_APPROVED = (
     LIGHT_CLOCK_SKEW,
     LIGHT_CLOCK_BACK,
     LIGHT_CAPPED,
+)
+
+# The backup watering (0.2.16). `{entity}` is the pump's entity id, `{date}` and `{slot}` the light date and the slot
+# index of the shot, `{reason}` a code of the event and `{count}` a number; never a dose, a name or a payload.
+BACKUP_SLOT_STARTED = (
+    "Rega de reserva: sem resposta do Cropilot, o conector começou sozinho o disparo {slot} de {date} na bomba {entity}."
+)
+BACKUP_SLOT_ENDED = "Rega de reserva: o conector terminou o disparo {slot} de {date} na bomba {entity}."
+BACKUP_SLOT_SKIPPED = (
+    "Rega de reserva: o conector não seguiu com o disparo {slot} de {date} na bomba {entity}: {reason}."
+)
+BACKUP_SLOT_STOPPED = (
+    "Rega de reserva: o conector parou o disparo {slot} de {date} na bomba {entity} depois do pulso em andamento."
+)
+BACKUP_SCHEDULE_REFUSED = (
+    "Os horários da rega de reserva da bomba {entity} não foram aceitos ({reason}). O conector não rega sozinho com "
+    "essa bomba até receber horários válidos do Cropilot."
+)
+BACKUP_EXPIRED = (
+    "Os horários da rega de reserva da bomba {entity} acabaram. O conector só volta a regar sozinho com horários novos "
+    "do Cropilot."
+)
+BACKUP_STOPPED = "O conector apagou os horários da rega de reserva e não rega sozinho até receber horários novos."
+BACKUP_FILE_UNREADABLE = (
+    "Os dados guardados da rega de reserva não puderam ser lidos. O conector começa sem eles."
+)
+BACKUP_PULSE_LOST = (
+    "O conector reiniciou durante um disparo da rega de reserva na bomba {entity}, e a vigia da bomba não tinha mais "
+    "esse disparo."
+)
+BACKUP_EVENTS_DROPPED = "Limite de 256 eventos da rega de reserva guardados: {count} eventos mais antigos descartados."
+BACKUP_EVENTS_UNACKNOWLEDGED = (
+    "O Cropilot não confirmou {count} eventos da rega de reserva em muitos relatórios seguidos, e o conector os "
+    "descartou."
+)
+
+PUMP_BACKUP = (
+    BACKUP_SLOT_STARTED,
+    BACKUP_SLOT_ENDED,
+    BACKUP_SLOT_SKIPPED,
+    BACKUP_SLOT_STOPPED,
+    BACKUP_SCHEDULE_REFUSED,
+    BACKUP_EXPIRED,
+    BACKUP_STOPPED,
+    BACKUP_FILE_UNREADABLE,
+    BACKUP_PULSE_LOST,
+    BACKUP_EVENTS_DROPPED,
+    BACKUP_EVENTS_UNACKNOWLEDGED,
 )
 
 STARTED = "Conector do Crop Steering {version} iniciado."

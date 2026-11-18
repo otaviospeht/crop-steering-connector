@@ -1,11 +1,14 @@
-"""Start step, pairing and the two loop threads, after the pump watch, the humidifier watch and the light controller.
+"""Start step, pairing and the two loop threads, after the pump watch, the backup watering, the humidifier watch and
+the light controller.
 
 Idle until a restart: a stop line (a revoked pairing, a refused pairing code, a refused server address or a
 missing code) leaves the process running with no loop and no Cropilot call, because the Supervisor's watchdog
-restarts an app that exits and would repeat the line in a loop. The pump watch, the humidifier watch and the light
-controller start first, from their files, and keep running through all of them. The halt of a stop line turns every
-humidifier the Cropilot turned on off at once and drops every light schedule, with the lights as they are; a new
-pairing does both too, before the first claim.
+restarts an app that exits and would repeat the line in a loop. The pump watch, the backup watering, the humidifier
+watch and the light controller start first, from their files, and keep running through all of them; the backup
+watering attaches to the pump watch before the watch's first pass, so a backup pulse a restart cut reaches it. The
+halt of a stop line turns every humidifier the Cropilot turned on off at once and drops every light schedule, with
+the lights as they are, and every backup schedule; a new pairing does all three too, before the first claim. Every
+Cropilot answer goes through `AnsweredTransport`, always installed since 0.2.16.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from .context import Clock, Context
 from .humidifier_watch import HumidifierWatch
 from .light_control import LightControl
 from .pump import PumpWatch
+from .pump_backup import PumpBackup
 from .reporting import BACKOFF_BASE_SECONDS, BACKOFF_CAP_SECONDS, ReportLoop, read_running_config, utc_now_iso
 from .settings import is_connector_token, load_options, pairing_code_state, resolve_server_url
 from .token_store import TokenStore
@@ -55,12 +59,13 @@ class Connector:
         self._log = log or logging.getLogger("crop_steering_connector")
         self.context: Context | None = None
         self.pump_watch: PumpWatch | None = None
+        self.pump_backup: PumpBackup | None = None
         self.humidifier_watch: HumidifierWatch | None = None
         self.light_control: LightControl | None = None
 
     def run(self) -> None:
-        """Start both watches and the light controller, then start and run both loops until the connector halts;
-        returns when it is idle."""
+        """Start both watches, the backup watering and the light controller, then start and run both loops until the
+        connector halts; returns when it is idle."""
         if self._supervisor_token:
             # Before the options, the token, the pairing and any Cropilot call.
             self.pump_watch = PumpWatch(
@@ -70,7 +75,18 @@ class Connector:
                 clock=self._clock,
                 log=self._log,
             )
+            # Attached to the watch before its first pass.
+            self.pump_backup = PumpBackup(
+                data_dir=self._data_dir,
+                transport=self._transport,
+                supervisor_token=self._supervisor_token,
+                clock=self._clock,
+                log=self._log,
+                watch=self.pump_watch,
+            )
             self.pump_watch.start()
+            self.pump_backup.start()
+            self.pump_backup.follow_halt(self.halt)
             self.humidifier_watch = HumidifierWatch(
                 data_dir=self._data_dir,
                 transport=self._transport,
@@ -92,7 +108,12 @@ class Connector:
         context = self.start()
         if context is None:
             return
-        report = ReportLoop(context, humidifier_watch=self.humidifier_watch, light_control=self.light_control)
+        report = ReportLoop(
+            context,
+            humidifier_watch=self.humidifier_watch,
+            light_control=self.light_control,
+            pump_backup=self.pump_backup,
+        )
         threads = [
             threading.Thread(target=self._loop, args=("relatório", report.tick), daemon=True),
             threading.Thread(target=self._loop, args=("comandos", self._command_cycle(context)), daemon=True),
@@ -120,9 +141,11 @@ class Connector:
                 return self._idle(messages.V33_PAIRING_CODE_REFUSED)
         if not self._supervisor_token:
             return self._idle(messages.NO_SUPERVISOR_TOKEN)
-        server_transport: Transport = self._transport
-        if self.humidifier_watch is not None:
-            server_transport = AnsweredTransport(self._transport, self.humidifier_watch.server_answered)
+        server_transport: Transport = AnsweredTransport(
+            self._transport,
+            on_success=self.humidifier_watch.server_answered if self.humidifier_watch is not None else None,
+            on_answer=self.pump_backup.server_answered if self.pump_backup is not None else None,
+        )
         context = Context(
             server=ServerClient(server_transport, server_url, self.run_id, self.halt),
             ha=HomeAssistantClient(self._transport, self._supervisor_token, self.halt),
@@ -187,6 +210,9 @@ class Connector:
                         if self.light_control is not None:
                             # And the old pairing's light schedules go; this one's first answer brings them back.
                             self.light_control.paired()
+                        if self.pump_backup is not None:
+                            # And its backup schedules, the same way.
+                            self.pump_backup.paired()
                         return token
                     detail = "resposta inválida"
                 else:
