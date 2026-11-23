@@ -4,6 +4,11 @@ It holds the humidifiers the Cropilot turned on (each with the off it is waiting
 last 2xx answer from the Cropilot and the events not yet accepted by it, so a restart resumes the watch, the
 silence timer included, before any Cropilot call. An event keeps the instant of its end here; the report turns it
 into an age.
+
+Since 0.2.17 the file also holds, under `restore`, the dehumidifiers the Cropilot turned off for a humidifier episode
+(each with the instant of the off, its lease and the re-on it is waiting for, if any) and the events of their re-ons.
+The version stays 1: a 0.2.16 file has no `restore` and reads as none, and a 0.2.16 connector reads a 0.2.17 file
+without it, its humidifiers and their events intact, because the re-on's entries and events live only there.
 """
 
 from __future__ import annotations
@@ -28,8 +33,18 @@ MAX_EVENTS = 20
 MAX_WATCHED = 200
 MAX_FILE_BYTES = 262_144
 OFF_KINDS = frozenset({"stop_off", "pair_off", "silence_off"})
-EVENT_KINDS = OFF_KINDS | {"off_failed"}
+OFF_EVENT_KINDS = OFF_KINDS | {"off_failed"}
+# The dehumidifier's re-on (0.2.17): the lease run out, then the three triggers the humidifier's off shares.
+ON_KINDS = frozenset({"stop_on", "pair_on", "silence_on", "lease_on"})
+ON_EVENT_KINDS = ON_KINDS | {"on_failed"}
+EVENT_KINDS = OFF_EVENT_KINDS | ON_EVENT_KINDS
+# The on that answers each off trigger of the humidifier watch.
+ON_FOR_OFF = {"stop_off": "stop_on", "pair_off": "pair_on", "silence_off": "silence_on"}
 HUMIDIFIER_ENTITY_RE = re.compile(r"^humidifier\.[a-z0-9_]{1,200}$")
+# A dehumidifier the re-on follows: a `humidifier` of class dehumidifier, or a plug in the Desumidificador role.
+RESTORE_ENTITY_RE = re.compile(r"^(humidifier|switch)\.[a-z0-9_]{1,200}$")
+# Every entity a `humidifier_events` item may name.
+EVENT_ENTITY_RE = RESTORE_ENTITY_RE
 
 
 class InvalidHumidifierFile(ValueError):
@@ -45,6 +60,19 @@ class Watched:
     command_id: str
     cut: str | None = None
     seen_on: bool = False
+
+
+@dataclass(frozen=True)
+class Restore:
+    """A dehumidifier a Cropilot `power_off` flagged `restore_on` turned off (0.2.17): the wall instant of the off, the
+    wall instant its lease runs out, by which command, the re-on it waits for (or None) and whether a read of this off
+    has already shown it `off`."""
+
+    off_at: float
+    lease_until: float
+    command_id: str
+    cut: str | None = None
+    seen_off: bool = False
 
 
 @dataclass(frozen=True)
@@ -68,7 +96,9 @@ class HumidifierEvent:
 class HumidifierFile:
     watched: dict[str, Watched] = field(default_factory=dict)
     last_ok_at: float | None = None
+    # Both watches' events in one queue, oldest first; the file keeps the re-on's apart, under `restore`.
     events: list[HumidifierEvent] = field(default_factory=list)
+    restore: dict[str, Restore] = field(default_factory=dict)
 
 
 def _is_instant(value: Any) -> bool:
@@ -98,29 +128,64 @@ def _watched(raw: Any) -> dict[str, Watched]:
     return watched
 
 
-def _events(raw: Any) -> list[HumidifierEvent]:
+def _events(raw: Any, kinds: frozenset[str], entity_re: re.Pattern) -> list[HumidifierEvent]:
     _require(isinstance(raw, list) and len(raw) <= MAX_EVENTS, "events")
     events: list[HumidifierEvent] = []
     for item in raw:
         _require(isinstance(item, dict), "event")
-        event_id = item.get("event_id")
+        event_id, entity_id = item.get("event_id"), item.get("entity_id")
         _require(isinstance(event_id, str) and EVENT_ID_RE.fullmatch(event_id) is not None, "event id")
-        _require(_is_entity(item.get("entity_id")), "event entity")
-        _require(item.get("kind") in EVENT_KINDS, "event kind")
+        _require(isinstance(entity_id, str) and entity_re.fullmatch(entity_id) is not None, "event entity")
+        _require(item.get("kind") in kinds, "event kind")
         _require(_is_instant(item.get("ended_at")), "event ended_at")
-        events.append(HumidifierEvent(event_id, item["entity_id"], item["kind"], float(item["ended_at"])))
+        events.append(HumidifierEvent(event_id, entity_id, item["kind"], float(item["ended_at"])))
     return events
+
+
+def _restore(raw: Any) -> tuple[dict[str, Restore], list[HumidifierEvent]]:
+    """The `restore` key of a 0.2.17 file; a file without it has none."""
+    if raw is None:
+        return {}, []
+    _require(isinstance(raw, dict), "restore")
+    items = raw.get("watched")
+    _require(isinstance(items, dict) and len(items) <= MAX_WATCHED, "restore watched")
+    restore: dict[str, Restore] = {}
+    for entity_id, item in items.items():
+        _require(isinstance(entity_id, str) and RESTORE_ENTITY_RE.fullmatch(entity_id) is not None, "restore entity")
+        _require(isinstance(item, dict), "restore item")
+        command_id, cut, seen_off = item.get("command_id"), item.get("cut"), item.get("seen_off")
+        _require(_is_instant(item.get("off_at")) and _is_instant(item.get("lease_until")), "restore instants")
+        _require(isinstance(command_id, str) and COMMAND_ID_RE.fullmatch(command_id) is not None, "restore command_id")
+        _require(cut is None or cut in ON_KINDS, "restore cut")
+        _require(isinstance(seen_off, bool), "restore seen_off")
+        restore[entity_id] = Restore(
+            off_at=float(item["off_at"]),
+            lease_until=float(item["lease_until"]),
+            command_id=command_id,
+            cut=cut,
+            seen_off=seen_off,
+        )
+    return restore, _events(raw.get("events"), ON_EVENT_KINDS, RESTORE_ENTITY_RE)
 
 
 def parse(document: Any) -> HumidifierFile:
     _require(isinstance(document, dict) and document.get("version") == FILE_VERSION, "version")
     last_ok_at = document.get("last_ok_at")
     _require(last_ok_at is None or _is_instant(last_ok_at), "last_ok_at")
+    restore, restore_events = _restore(document.get("restore"))
+    events = _events(document.get("events"), OFF_EVENT_KINDS, HUMIDIFIER_ENTITY_RE) + restore_events
+    # One queue again, oldest first; a stable sort keeps the written order of equal instants.
+    events.sort(key=lambda event: event.ended_at)
     return HumidifierFile(
         watched=_watched(document.get("watched")),
         last_ok_at=None if last_ok_at is None else float(last_ok_at),
-        events=_events(document.get("events")),
+        events=events[-MAX_EVENTS:],
+        restore=restore,
     )
+
+
+def _event_document(event: HumidifierEvent) -> dict:
+    return {"event_id": event.event_id, "entity_id": event.entity_id, "kind": event.kind, "ended_at": event.ended_at}
 
 
 def serialize(content: HumidifierFile) -> dict:
@@ -131,10 +196,20 @@ def serialize(content: HumidifierFile) -> dict:
             for entity_id, item in content.watched.items()
         },
         "last_ok_at": content.last_ok_at,
-        "events": [
-            {"event_id": event.event_id, "entity_id": event.entity_id, "kind": event.kind, "ended_at": event.ended_at}
-            for event in content.events
-        ],
+        "events": [_event_document(event) for event in content.events if event.kind in OFF_EVENT_KINDS],
+        "restore": {
+            "watched": {
+                entity_id: {
+                    "off_at": item.off_at,
+                    "lease_until": item.lease_until,
+                    "command_id": item.command_id,
+                    "cut": item.cut,
+                    "seen_off": item.seen_off,
+                }
+                for entity_id, item in content.restore.items()
+            },
+            "events": [_event_document(event) for event in content.events if event.kind in ON_EVENT_KINDS],
+        },
     }
 
 

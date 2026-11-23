@@ -1,14 +1,16 @@
-"""Start step, pairing and the two loop threads, after the pump watch, the backup watering, the humidifier watch and
-the light controller.
+"""Start step, pairing and the two loop threads, after the pump watch, the backup watering, the humidifier watch, the
+light controller and the climate reserve.
 
 Idle until a restart: a stop line (a revoked pairing, a refused pairing code, a refused server address or a
 missing code) leaves the process running with no loop and no Cropilot call, because the Supervisor's watchdog
 restarts an app that exits and would repeat the line in a loop. The pump watch, the backup watering, the humidifier
-watch and the light controller start first, from their files, and keep running through all of them; the backup
-watering attaches to the pump watch before the watch's first pass, so a backup pulse a restart cut reaches it. The
-halt of a stop line turns every humidifier the Cropilot turned on off at once and drops every light schedule, with
-the lights as they are, and every backup schedule; a new pairing does all three too, before the first claim. Every
-Cropilot answer goes through `AnsweredTransport`, always installed since 0.2.16.
+watch, the light controller and the climate reserve start first, from their files, and keep running through all of
+them; the backup watering attaches to the pump watch before the watch's first pass, so a backup pulse a restart cut
+reaches it. The halt of a stop line turns every humidifier the Cropilot turned on off at once, turns every
+dehumidifier it turned off for a humidifier back on after its 600 s, and drops every light schedule, with the lights as
+they are, every backup schedule and every climate schedule; a new pairing does all of it too, before the first claim.
+Every Cropilot answer goes through `AnsweredTransport`, always installed since 0.2.16, to the backup watering and, since
+0.2.17, to the climate reserve.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from typing import Callable
 from . import __version__, messages, policy
 from .backoff import Backoff, parse_retry_after
 from .clients import Halted, HomeAssistantClient, ServerClient, describe, error_code, is_success, json_body
+from .climate_backup import ClimateBackup
 from .commands import CommandLoop
 from .context import Clock, Context
 from .humidifier_watch import HumidifierWatch
@@ -62,10 +65,11 @@ class Connector:
         self.pump_backup: PumpBackup | None = None
         self.humidifier_watch: HumidifierWatch | None = None
         self.light_control: LightControl | None = None
+        self.climate_backup: ClimateBackup | None = None
 
     def run(self) -> None:
-        """Start both watches, the backup watering and the light controller, then start and run both loops until the
-        connector halts; returns when it is idle."""
+        """Start both watches, the backup watering, the light controller and the climate reserve, then start and run
+        both loops until the connector halts; returns when it is idle."""
         if self._supervisor_token:
             # Before the options, the token, the pairing and any Cropilot call.
             self.pump_watch = PumpWatch(
@@ -105,6 +109,15 @@ class Connector:
             )
             self.light_control.start()
             self.light_control.follow_halt(self.halt)
+            self.climate_backup = ClimateBackup(
+                data_dir=self._data_dir,
+                transport=self._transport,
+                supervisor_token=self._supervisor_token,
+                clock=self._clock,
+                log=self._log,
+            )
+            self.climate_backup.start()
+            self.climate_backup.follow_halt(self.halt)
         context = self.start()
         if context is None:
             return
@@ -113,6 +126,7 @@ class Connector:
             humidifier_watch=self.humidifier_watch,
             light_control=self.light_control,
             pump_backup=self.pump_backup,
+            climate_backup=self.climate_backup,
         )
         threads = [
             threading.Thread(target=self._loop, args=("relatório", report.tick), daemon=True),
@@ -144,7 +158,7 @@ class Connector:
         server_transport: Transport = AnsweredTransport(
             self._transport,
             on_success=self.humidifier_watch.server_answered if self.humidifier_watch is not None else None,
-            on_answer=self.pump_backup.server_answered if self.pump_backup is not None else None,
+            on_answer=self._answered,
         )
         context = Context(
             server=ServerClient(server_transport, server_url, self.run_id, self.halt),
@@ -168,6 +182,12 @@ class Connector:
         context.token = token
         self.context = context
         return context
+
+    def _answered(self, response: Response) -> None:
+        """Every HTTP answer of the Cropilot, to the backup watering and the climate reserve, which each place it."""
+        for reserve in (self.pump_backup, self.climate_backup):
+            if reserve is not None:
+                reserve.server_answered(response)
 
     def _idle(self, line: str) -> None:
         self.halt.set()
@@ -213,6 +233,9 @@ class Connector:
                         if self.pump_backup is not None:
                             # And its backup schedules, the same way.
                             self.pump_backup.paired()
+                        if self.climate_backup is not None:
+                            # And its climate schedules.
+                            self.climate_backup.paired()
                         return token
                     detail = "resposta inválida"
                 else:

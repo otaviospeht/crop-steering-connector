@@ -1,4 +1,9 @@
-"""The command loop: claim, checks, start, the HA call and the result that is never dropped."""
+"""The command loop: claim, checks, start, the HA call and the result that is never dropped.
+
+Since 0.2.17 a claim answer may carry `restore_on_leases`, which goes to the humidifier watch before the batch runs, an
+empty batch included, and a `power_off` may carry `restore_on` (actions.py): it runs only on a `humidifier` that reads
+as a dehumidifier or on a plug the pump watch does not hold, and once it reaches HA the watch follows it.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +12,9 @@ from typing import TYPE_CHECKING
 
 from . import messages, policy
 from .actions import (
+    DEHUMIDIFIER_DEVICE_CLASS,
     NEEDS_POWER_ON,
+    RESTORE_DOMAINS,
     Command,
     InvalidCommand,
     ServiceSpec,
@@ -114,6 +121,9 @@ class CommandLoop:
         if not isinstance(items, list):
             return self._endpoint_failed(policy.CLAIM, self._claim_backoff, "resposta inválida")
         self._claim_backoff.reset()
+        if self._humidifier_watch is not None and "restore_on_leases" in data:
+            # Before the batch: a flagged off in it enters after the list, with its own lease from the off.
+            self._humidifier_watch.leases(data["restore_on_leases"], data.get("server_time"), received_at)
         if not items:
             return CLAIM_INTERVAL_SECONDS + context.rng.uniform(-CLAIM_JITTER_SECONDS, CLAIM_JITTER_SECONDS)
         if len(items) > MAX_COMMANDS_PER_CLAIM:
@@ -267,16 +277,44 @@ class CommandLoop:
             raise Refused("already_on")
         if command.action in NEEDS_POWER_ON and command.domain in POWERED_DOMAINS and state.get("state") == "off":
             raise Refused("would_power_on")
+        if command.restore_on is True and not self._restorable(command, state):
+            # The watch would turn this entity back on by itself: only a dehumidifier or its plug, never a pump.
+            raise Refused("invalid_command")
         if context.clock.monotonic() >= deadline:
             raise Refused("expired")
         return spec, body, state
 
+    def _restorable(self, command: Command, state: dict) -> bool:
+        """A flagged `power_off` runs only where the watch may turn the entity on again: a `humidifier` that reads as
+        a dehumidifier, or a plug that is not a pump, and only with the watch running."""
+        if self._humidifier_watch is None or command.domain not in RESTORE_DOMAINS:
+            return False
+        if command.domain == "switch":
+            pumps = self._context.pump_watch
+            return pumps is not None and not pumps.is_pump(command.entity_id)
+        attributes = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
+        return attributes.get("device_class") == DEHUMIDIFIER_DEVICE_CLASS
+
     def _follow_humidifier(self, command: Command, state: dict, outcome: str, code: str | None) -> None:
         """Hand a humidifier's power to the watch: a `power_on` that reached HA enters it, a `power_off` that
         succeeded leaves it. A call HA may have run without answering (`ha_error`) also enters, so the doubt fails
-        closed: when it never reads `on`, the watch drops it 15 minutes after the call."""
+        closed: when it never reads `on`, the watch drops it 15 minutes after the call.
+
+        And a dehumidifier's to the re-on (0.2.17): a flagged `power_off` that reached HA enters it, `ha_error`
+        included, since a dehumidifier the watch turns on needlessly only reads `on` and leaves; a `power_off` without
+        the flag that ran, whatever HA answered, and a `power_on` that succeeded leave it."""
         watch = self._humidifier_watch
-        if watch is None or command.domain != "humidifier":
+        if watch is None:
+            return
+        reached = outcome == "succeeded" or code == "ha_error"
+        if command.domain in RESTORE_DOMAINS and command.action == "power_off":
+            if command.restore_on is not True:
+                watch.restore_left(command.entity_id)
+            elif reached:
+                watch.restore_entered(command.entity_id, command.id)
+        if command.domain in RESTORE_DOMAINS and command.action == "power_on" and outcome == "succeeded":
+            watch.restore_left(command.entity_id)
+        if command.domain != "humidifier":
             return
         if command.action == "power_off" and outcome == "succeeded":
             watch.turned_off(command.entity_id)

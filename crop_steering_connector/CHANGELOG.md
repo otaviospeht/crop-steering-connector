@@ -1,5 +1,22 @@
 # Mudanças
 
+## 0.2.17
+
+- Enquanto o umidificador trabalha, o Cropilot pode desligar o desumidificador, com a proteção de 10 minutos, e o religa
+  quando o umidificador para. O Conector vigia cada desumidificador que o Cropilot desligou assim e o religa sozinho,
+  nunca antes de 10 minutos do desligamento, quando a plataforma fica 20 minutos sem responder, quando ela passa 25
+  minutos sem confirmar esse desligamento, quando o pareamento acaba e quando ele é pareado de novo. Se você ligar o
+  desumidificador nesse tempo, ou tirá-lo da função dele no Cropilot, o Conector deixa de vigiá-lo.
+- Reserva do clima: o Cropilot pode mandar ao Conector, junto com cada resposta, as trocas de período do
+  ar-condicionado e do desumidificador de um dia à frente. Se a plataforma ficar 20 minutos sem responder, o Conector
+  aplica sozinho as trocas que ela não fez, nos horários em que a iluminação acende e apaga, com os valores que o
+  Cropilot mandou: só no ar-condicionado que está refrigerando e no desumidificador que está ligado, sem nunca ligar
+  nem desligar um aparelho. Isso só passa a valer quando o Cropilot mandar esses horários. Sem internet na casa ou com
+  o Home Assistant parado, a reserva do clima não faz nada.
+- Antes de voltar para a 0.2.16, espere o Conector falar com o Cropilot de novo: a versão anterior não religa sozinha
+  o desumidificador que o Cropilot desligou para o umidificador trabalhar, e, com a plataforma fora do ar, ele fica
+  desligado até ela voltar; e as trocas que a reserva do clima fez e ainda não mandou se perdem na volta.
+
 ## 0.2.16
 
 - Rega de reserva: junto com cada resposta, o Cropilot manda ao Conector os disparos da rega automática de um dia à

@@ -33,6 +33,8 @@ umidade e comanda o ar-condicionado, o desumidificador, o umidificador e as toma
   função, ele só lê o estado dela, a não ser para desligar a bomba por segurança. O ar-condicionado, o desumidificador
   e a tomada escolhida como desumidificador do espaço seguem a proteção de 10 minutos do Cropilot.
 - No desumidificador que aceita umidade programada, o Cropilot muda essa umidade em vez de ligar e desligar o aparelho.
+  Com o Conector 0.2.17 ou mais novo, ele só desliga o desumidificador enquanto o umidificador trabalha: veja
+  “Umidificador”.
 - Quando o Cropilot marca a hora de um comando, o Conector espera essa hora antes de mandá-lo ao aparelho, sem segurar
   os outros. Assim, num espaço com mais de um ar-condicionado ou desumidificador, os compressores não partem todos
   juntos, também quando o Conector volta a se conectar e recebe vários comandos de uma vez.
@@ -134,6 +136,14 @@ revogação: o Conector desliga o umidificador, e, com o Home Assistant fora do 
 Um umidificador que você liga no Home Assistant ou no próprio aparelho fica como está. Com um umidificador do Smart
 Life, o desligamento passa pela nuvem do Smart Life: sem internet, ele pode não desligar.
 
+Com o Conector 0.2.17 ou mais novo, enquanto o umidificador trabalha, o Cropilot desliga o desumidificador do espaço,
+com a proteção de 10 minutos, e o religa quando o umidificador para. O Conector vigia cada desumidificador que o
+Cropilot desligou assim e o religa sozinho, nunca antes de 10 minutos do desligamento, quando a plataforma para de
+responder por 20 minutos, quando ela passa 25 minutos sem confirmar esse desligamento, quando a conexão é revogada e
+quando ele é pareado de novo. Se você ligar o desumidificador nesse tempo, no Home Assistant ou no próprio aparelho, ou
+tirá-lo da função dele no Cropilot, o Conector deixa de vigiá-lo, e ele fica como você deixou. Com um desumidificador
+do Smart Life, o religamento passa pela nuvem do Smart Life: sem internet, ele pode não religar.
+
 ## Iluminação
 
 O Cropilot pode acender e apagar a iluminação do espaço nos horários da fase, sem o timer da tomada. Você liga isso no
@@ -145,6 +155,27 @@ funciona sem internet.
 
 Uma lâmpada inteligente também pode ser a iluminação do espaço, como a tomada. O Cropilot só a acende e a apaga: nunca
 muda o brilho, a cor nem os efeitos dela, e o Conector recusa qualquer outro pedido para a lâmpada.
+
+## Reserva do clima
+
+Com o Conector 0.2.17 ou mais novo, o Cropilot pode mandar junto com cada resposta as trocas de período do
+ar-condicionado e do desumidificador de um dia à frente, ou até o fim do plano: a temperatura programada no
+ar-condicionado e a umidade programada no desumidificador para cada período da iluminação. Se a plataforma ficar 20
+minutos sem responder, o Conector aplica sozinho as trocas que ela não fez, nos horários em que a iluminação acende e
+apaga, com os valores que o Cropilot mandou. Ele nunca repete o período que estava valendo quando a plataforma parou de
+responder e espera 30 minutos entre duas mudanças no mesmo aparelho.
+
+O Conector só muda a temperatura do ar-condicionado que está refrigerando e a umidade do desumidificador que está
+ligado, e nunca liga nem desliga o ar-condicionado, o desumidificador ou o umidificador. Se o Cropilot tinha posto o
+ar-condicionado para desumidificar, o Conector o passa a refrigerar quando assume; se o tinha posto para aquecer, só
+quando a iluminação acende. Nos dois casos, ele espera 10 minutos depois da última troca de modo. Um ar-condicionado
+que você pôs em outro modo fica como está.
+
+Isso só passa a valer quando o Cropilot mandar esses horários, e o Conector para assim que a plataforma volta a
+responder. Ele apaga os horários quando o Cropilot avisa, quando eles acabam, quando o pareamento acaba e quando ele é
+pareado de novo; depois de reiniciar, ele só volta a seguir os horários depois de falar com o Cropilot de novo. Sem
+internet na casa, os aparelhos do Smart Life não recebem o comando, e, com o Home Assistant parado, nada chega aos
+aparelhos: nesses casos, a reserva do clima não faz nada.
 
 ## Segurança
 

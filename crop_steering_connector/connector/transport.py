@@ -54,8 +54,8 @@ class AnsweredTransport:
     caller reads it; the Cropilot client's only, never HA's. Since 0.2.16 it is always installed.
 
     The humidifier watch (0.2.7) counts its 20 minutes of silence from the last 2xx, so a 3xx, a 4xx, a 5xx, a timeout
-    or no network never moves it. The backup watering (0.2.16) places each 2xx in the server's time and drops its
-    schedules on a 403; a timeout or no network reaches neither, since no answer came.
+    or no network never moves it. The backup watering (0.2.16) and the climate reserve (0.2.17) place each 2xx in the
+    server's time and drop their schedules on a 403; a timeout or no network reaches neither, since no answer came.
     """
 
     def __init__(

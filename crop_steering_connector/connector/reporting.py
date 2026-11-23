@@ -25,10 +25,16 @@ holds with each pump's slot in progress (`running`), built after /states so it a
 moment, and `pump_backup_events`, taken before /states as the pump's events are, the oldest that fit beside it in
 16384 bytes. They leave the queue only by the answer's `pump_backup_accepted`, never on a bare 2xx. Every accepted
 answer goes to the backup watering with its pump entries; an answer the connector cannot read drops its schedules.
+A 0.2.17 report always closes with the climate reserve's `climate_backup_events`, taken before /states as the others,
+at most 40 and within 16384 bytes, and never more than the room the rest of the base leaves the entities above 8192
+bytes; the ones left out stay queued. They leave the queue only by the answer's `climate_backup_accepted`. Every
+accepted answer goes to the reserve with its entries and `climate_backup_supported`; an answer the connector cannot read
+drops its schedules, and so does a 403.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -36,9 +42,10 @@ from typing import TYPE_CHECKING
 from . import __version__, messages, policy
 from .backoff import Backoff, parse_retry_after
 from .clients import describe, error_code, is_success, json_body
+from .climate_backup import REPORT_KEYS_MAX_BYTES as CLIMATE_KEYS_MAX_BYTES
 from .context import Context
 from .devices import DeviceMapReader
-from .entities import ClimateReadings, build_report, report_entities
+from .entities import MAX_REPORT_BYTES, ClimateReadings, build_report, report_entities
 from .light_control import compressor_switches, markers_of, report_keys
 from .light_store import parse_instant
 from .pump_store import PUMP_ENTITY_RE, PumpEvent, is_max_on
@@ -46,6 +53,8 @@ from .refresh import SensorRefresher
 from .transport import Response, TransportError
 
 if TYPE_CHECKING:
+    from .climate_backup import ClimateBackup
+    from .climate_backup_store import ClimateEvent
     from .devices import DeviceMap
     from .humidifier_store import HumidifierEvent
     from .humidifier_watch import HumidifierWatch
@@ -64,10 +73,17 @@ SYNC_MIN_INTERVAL_SECONDS = 120.0
 # The server's id of a sync request, echoed as it came; any other value is no id.
 SYNC_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 TICK_SECONDS = 1.0
+# The climate reserve's events never take the room the rest of the base leaves the entities below this.
+ENTITY_ROOM_BYTES = 8192
 
 
 def utc_now_iso(now: float) -> str:
     return datetime.fromtimestamp(int(now), tz=timezone.utc).isoformat()
+
+
+def _encode(value: object) -> bytes:
+    """As `build_report` encodes the body."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
 def read_running_config(context: Context) -> dict | None:
@@ -94,13 +110,16 @@ class ReportLoop:
         humidifier_watch: HumidifierWatch | None = None,
         light_control: LightControl | None = None,
         pump_backup: PumpBackup | None = None,
+        climate_backup: ClimateBackup | None = None,
     ) -> None:
         self._context = context
         self._humidifier_watch = humidifier_watch
         self._light = light_control
         self._backup = pump_backup
+        self._climate = climate_backup
         self._sent_light_events: list[LightEvent] = []
         self._sent_backup_events: list[BackupEvent] = []
+        self._sent_climate_events: list[ClimateEvent] = []
         self._light_reads = 0
         self._compressors: frozenset[str] = frozenset()
         self._device_of: dict[str, str | None] | None = None
@@ -153,6 +172,7 @@ class ReportLoop:
             or (humidifiers is not None and humidifiers.events_waiting())
             or (self._light is not None and self._light.events_waiting())
             or (self._backup is not None and self._backup.events_waiting())
+            or (self._climate is not None and self._climate.events_waiting())
         )
 
     def cycle(self) -> float:
@@ -183,6 +203,9 @@ class ReportLoop:
         backup = self._backup
         backup_candidates = backup.snapshot_events() if backup is not None else []
         self._sent_backup_events = []
+        climate = self._climate
+        climate_candidates = climate.snapshot_events() if climate is not None else []
+        self._sent_climate_events = []
         try:
             response = context.ha.get("/states")
         except TransportError as error:
@@ -220,10 +243,17 @@ class ReportLoop:
             "light_events": light_events,
             "pump_backup": held,
             "pump_backup_events": backup_events,
+            "climate_backup_events": [],
         }
         self._ack_sent = self._ack is not None
         if self._ack is not None:
             envelope["sync_ack"] = self._ack
+        if climate is not None and climate_candidates:
+            room = MAX_REPORT_BYTES - ENTITY_ROOM_BYTES - len(_encode(envelope))
+            budget = min(CLIMATE_KEYS_MAX_BYTES, room + len(_encode({"climate_backup_events": []})))
+            envelope["climate_backup_events"], self._sent_climate_events = climate.report_keys(
+                climate_candidates, now, budget
+            )
         body, sent, dropped = build_report(
             envelope,
             entities,
@@ -283,14 +313,21 @@ class ReportLoop:
             accepted = data.get("pump_backup_accepted") if isinstance(data, dict) else None
             backup.acknowledge(accepted, [event.event_id for event in self._sent_backup_events])
         self._sent_backup_events = []
+        climate = self._climate
+        if climate is not None:
+            accepted = data.get("climate_backup_accepted") if isinstance(data, dict) else None
+            climate.acknowledge(accepted, [event.event_id for event in self._sent_climate_events])
+        self._sent_climate_events = []
         entries = data.get("allowlist") if isinstance(data, dict) else None
         parsed = _parse_allowlist(entries)
         if parsed is None:
             # Fail closed: an answer the connector cannot read never keeps the device info going, nor a schedule of
-            # the backup watering.
+            # the backup watering or of the climate reserve.
             self._devices.want_info(False)
             if backup is not None:
                 backup.drop_all()
+            if climate is not None:
+                climate.drop_all()
             self._accepted_last = False
             return self._failed("resposta inválida")
         # Only the JSON true asks; an older server sends no key, which is false.
@@ -321,6 +358,9 @@ class ReportLoop:
                 self._compressors,
                 self._device_of,
             )
+        if climate is not None:
+            supported = data.get("climate_backup_supported") is True
+            climate.replace(entries, supported, data.get("server_time"), self._device_of)
         if data.get("sync_requested") is True:
             request_id = data.get("sync_request_id")
             self._sync(request_id if isinstance(request_id, str) and SYNC_REQUEST_ID_RE.fullmatch(request_id) else None)
@@ -342,6 +382,8 @@ class ReportLoop:
             self._light.devices(self._device_of)
         if self._backup is not None:
             self._backup.devices(self._device_of)
+        if self._climate is not None:
+            self._climate.devices(self._device_of)
 
     def _sync(self, request_id: str | None) -> None:
         """`sync_requested`: drop every cache of Home Assistant, so the next report, brought forward, reads it all
@@ -386,6 +428,8 @@ class ReportLoop:
             self._devices.want_info(False)
             if self._backup is not None:
                 self._backup.forbidden()
+            if self._climate is not None:
+                self._climate.forbidden()
             context.forbidden()
             return self._backoff.ceiling()
         if action == policy.ALLOWLISTED_ONLY:

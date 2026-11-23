@@ -1,9 +1,11 @@
 """Every line the connector writes to the app's Log tab.
 
-The lines of `APPROVED`, `PUMP_APPROVED`, `HUMIDIFIER_APPROVED` and `LIGHT_APPROVED` are approved texts, kept
-verbatim, and DOCS.md explains each line of `APPROVED`. The other lines carry only codes, counts and entity ids for
-the Cropilot team; they never carry a token, the pairing code, a payload or a device name. `PUMP_BACKUP` (0.2.16) are
-the backup watering's lines: one per slot started and ended, with the entity id and the shot's key only.
+The lines of `APPROVED`, `PUMP_APPROVED`, `HUMIDIFIER_APPROVED`, `RESTORE_APPROVED` and `LIGHT_APPROVED` are approved
+texts, kept verbatim, and DOCS.md explains each line of `APPROVED`. The other lines carry only codes, counts and entity
+ids for the Cropilot team; they never carry a token, the pairing code, a payload or a device name. `PUMP_BACKUP`
+(0.2.16) are the backup watering's lines: one per slot started and ended, with the entity id and the shot's key only.
+`RESTORE_APPROVED` (0.2.17) are the dehumidifier's re-on lines, and `CLIMATE_BACKUP` (0.2.17) the climate reserve's,
+with the entity id, the step's instant and codes only.
 """
 
 V13_REVOKED = (
@@ -76,6 +78,32 @@ HUMIDIFIER_APPROVED = (
     HUMIDIFIER_SILENCE_OFF,
     HUMIDIFIER_OFF_RETRY,
     HUMIDIFIER_FILE_UNREADABLE,
+)
+
+# The dehumidifier's re-on (0.2.17). `{entity}` is the entity id of the dehumidifier or of its plug.
+RESTORE_STOP_ON = (
+    "O pareamento com o Cropilot terminou. O conector religou o desumidificador {entity}, que o Cropilot tinha "
+    "desligado para o umidificador trabalhar."
+)
+RESTORE_PAIR_ON = (
+    "O conector foi pareado de novo e religou o desumidificador {entity}, que o Cropilot tinha desligado para o "
+    "umidificador trabalhar."
+)
+RESTORE_SILENCE_ON = (
+    "O Cropilot não responde há 20 minutos. O conector religou o desumidificador {entity}, que o Cropilot tinha "
+    "desligado para o umidificador trabalhar."
+)
+RESTORE_LEASE_ON = (
+    "O Cropilot não confirmou por 25 minutos o desligamento do desumidificador {entity}. O conector o religou."
+)
+RESTORE_ON_RETRY = "O desumidificador {entity} não religou. O conector tenta de novo em {seconds} s."
+
+RESTORE_APPROVED = (
+    RESTORE_STOP_ON,
+    RESTORE_PAIR_ON,
+    RESTORE_SILENCE_ON,
+    RESTORE_LEASE_ON,
+    RESTORE_ON_RETRY,
 )
 
 # The light controller. `{entity}` is the light plug's entity id, `{verb}` «acender» or «apagar» and `{data}` the
@@ -194,6 +222,48 @@ PUMP_BACKUP = (
     BACKUP_EVENTS_UNACKNOWLEDGED,
 )
 
+# The climate reserve (0.2.17). `{entity}` is the device's entity id, `{step}` the instant of the light transition in
+# UTC, `{capability}` and `{reason}` codes of the event, `{value}` the number sent and `{count}` a number.
+CLIMATE_TAKEOVER = (
+    "Reserva do clima: sem resposta do Cropilot, o conector segue os horários guardados do aparelho {entity}."
+)
+CLIMATE_APPLIED = "Reserva do clima: o conector aplicou no aparelho {entity} o horário de {step}: {capability} {value}."
+CLIMATE_MODE_EXIT = "Reserva do clima: o conector passou o ar-condicionado {entity} a refrigerar."
+CLIMATE_SKIPPED = "Reserva do clima: o conector não aplicou no aparelho {entity} o horário de {step}: {reason}."
+CLIMATE_SCHEDULE_REFUSED = (
+    "Os horários da reserva do clima do aparelho {entity} não foram aceitos ({reason}). O conector não muda esse "
+    "aparelho sozinho até receber horários válidos do Cropilot."
+)
+CLIMATE_EXPIRED = (
+    "Os horários da reserva do clima do aparelho {entity} acabaram. O conector só volta a mudar esse aparelho sozinho "
+    "com horários novos do Cropilot."
+)
+CLIMATE_STOPPED = (
+    "O conector apagou os horários da reserva do clima e não muda o ar-condicionado nem o desumidificador sozinho até "
+    "receber horários novos."
+)
+CLIMATE_FILE_UNREADABLE = "Os dados guardados da reserva do clima não puderam ser lidos. O conector começa sem eles."
+CLIMATE_EVENTS_DROPPED = (
+    "Limite de 256 eventos da reserva do clima guardados: {count} eventos mais antigos descartados."
+)
+CLIMATE_EVENTS_UNACKNOWLEDGED = (
+    "O Cropilot não confirmou {count} eventos da reserva do clima em muitos relatórios seguidos, e o conector os "
+    "descartou."
+)
+
+CLIMATE_BACKUP = (
+    CLIMATE_TAKEOVER,
+    CLIMATE_APPLIED,
+    CLIMATE_MODE_EXIT,
+    CLIMATE_SKIPPED,
+    CLIMATE_SCHEDULE_REFUSED,
+    CLIMATE_EXPIRED,
+    CLIMATE_STOPPED,
+    CLIMATE_FILE_UNREADABLE,
+    CLIMATE_EVENTS_DROPPED,
+    CLIMATE_EVENTS_UNACKNOWLEDGED,
+)
+
 STARTED = "Conector do Crop Steering {version} iniciado."
 NO_SUPERVISOR_TOKEN = (
     "O conector não recebeu o acesso ao Home Assistant (SUPERVISOR_TOKEN ausente). Clique em “Reiniciar”; "
@@ -235,6 +305,17 @@ HUMIDIFIER_OFF_UNCONFIRMED = (
 )
 HUMIDIFIER_WATCHED_DROPPED = (
     "Limite de 200 umidificadores vigiados: {count} umidificadores mais antigos deixaram de ser vigiados."
+)
+# The dehumidifier's re-on (0.2.17), for the team.
+RESTORE_GONE = "O desumidificador {entity} não existe mais no Home Assistant. O conector deixou de vigiá-lo."
+RESTORE_ON_UNCONFIRMED = (
+    "O Home Assistant não confirmou que o desumidificador {entity} religou. O conector tenta de novo em {seconds} s."
+)
+RESTORE_NOT_DEHUMIDIFIER = (
+    "A entidade {entity} não é mais um desumidificador no Home Assistant. O conector deixou de vigiá-la e não a religa."
+)
+RESTORE_WATCHED_DROPPED = (
+    "Limite de 200 desumidificadores vigiados: {count} desumidificadores mais antigos deixaram de ser vigiados."
 )
 SENSOR_REFRESH_FAILED = (
     "Falha ao atualizar {count} sensores no Home Assistant: {detail}. Nova tentativa em 10 minutos."
@@ -285,6 +366,10 @@ TECHNICAL = (
     HUMIDIFIER_GONE,
     HUMIDIFIER_OFF_UNCONFIRMED,
     HUMIDIFIER_WATCHED_DROPPED,
+    RESTORE_GONE,
+    RESTORE_ON_UNCONFIRMED,
+    RESTORE_NOT_DEHUMIDIFIER,
+    RESTORE_WATCHED_DROPPED,
     SENSOR_REFRESH_FAILED,
     DEVICE_IDENTITIES_FAILED,
     DEVICE_INFO_FAILED,

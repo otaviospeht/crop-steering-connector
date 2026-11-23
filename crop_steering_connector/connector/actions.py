@@ -31,6 +31,16 @@ Since 0.2.16 the backup watering (pump_backup.py) turns a pump plug on by itself
 Cropilot sent, with the server silent: its own closed table, `LOCAL_PUMP_SERVICES`, holds only `switch.turn_on`, body
 exactly `{entity_id}`. The pump watch turns it off at the dose, as a Cropilot shot. It is not in `ACTIONS`, so no
 claimed command reaches it, and no server answer names a service or adds a key.
+Since 0.2.17 a `power_off` may carry `restore_on: true` at the item's level, beside `not_before` and never inside
+`data`: the episode off of a dehumidifier (a `humidifier` of class `dehumidifier` or a plug, never a pump), which the
+humidifier watch turns back on when the Cropilot stops renewing it (humidifier_watch.py). Its own closed table,
+`LOCAL_RESTORE_SERVICES`, holds only `humidifier.turn_on` and `switch.turn_on`, body exactly `{entity_id}`. The key
+on any other action or domain, or with any value but `true` (null reads as absent), is `invalid_command`.
+Since 0.2.17 the climate reserve (climate_backup.py) moves, with the Cropilot silent, only the setpoints the Cropilot
+sent for the light transitions it missed: its own closed table, `LOCAL_CLIMATE_SERVICES`, holds `climate.set_temperature`
+(body exactly `{entity_id, temperature}`), `humidifier.set_humidity` (`{entity_id, humidity}`) and
+`climate.set_hvac_mode` with the constant `cool` (`{entity_id, hvac_mode}`); never a power service, and never a
+humidifier. Each value must fit the entity's live range and step (`temperature_fits`, `humidity_fits`).
 """
 
 from __future__ import annotations
@@ -108,6 +118,19 @@ LOCAL_LIGHT_SERVICES: dict[tuple[str, str], str] = {
 # The backup watering's only HA service, by entity domain; used by pump_backup.py alone. A valve never enters it.
 LOCAL_PUMP_SERVICES: dict[str, str] = {"switch": "switch/turn_on"}
 
+# The dehumidifier's re-on (0.2.17), by entity domain; used by humidifier_watch.py alone.
+LOCAL_RESTORE_SERVICES: dict[str, str] = {"humidifier": "humidifier/turn_on", "switch": "switch/turn_on"}
+# Where a claimed `power_off` may carry `restore_on`.
+RESTORE_DOMAINS = frozenset(LOCAL_RESTORE_SERVICES)
+
+# The climate reserve's only HA services (0.2.17), by (entity domain, what it moves); used by climate_backup.py alone.
+# The mode one only ever carries `hvac_mode: cool`, the air conditioner's exit from the platform's own dry or heat.
+LOCAL_CLIMATE_SERVICES: dict[tuple[str, str], str] = {
+    ("climate", "target_temperature"): "climate/set_temperature",
+    ("climate", "operation_mode"): "climate/set_hvac_mode",
+    ("humidifier", "target_humidity"): "humidifier/set_humidity",
+}
+
 
 class InvalidCommand(Exception):
     """A command outside the table: unknown domain, action or key, or a value outside the table."""
@@ -123,6 +146,8 @@ class Command:
     received_at: float
     # Since 0.2.15: the instant before which the command never reaches HA (start_gap.py); None runs at once.
     not_before: Any = None
+    # Since 0.2.17: `True` on a dehumidifier's episode off, which the humidifier watch turns back on; None without it.
+    restore_on: Any = None
 
     @property
     def domain(self) -> str:
@@ -154,6 +179,7 @@ def parse_command(raw: Any, received_at: float) -> Command | None:
         expires_in_seconds=raw.get("expires_in_seconds"),
         received_at=received_at,
         not_before=raw.get("not_before"),
+        restore_on=raw.get("restore_on"),
     )
 
 
@@ -188,6 +214,10 @@ def service_spec(command: Command) -> ServiceSpec:
         raise InvalidCommand("max_on_seconds")
     if "dose_seconds" in data and dose_seconds(command) is None:
         raise InvalidCommand("dose_seconds")
+    if command.restore_on is not None and (
+        command.restore_on is not True or command.action != "power_off" or command.domain not in RESTORE_DOMAINS
+    ):
+        raise InvalidCommand("restore_on")
     return spec
 
 
@@ -243,6 +273,34 @@ def service_body(command: Command, spec: ServiceSpec, live_state: dict) -> dict:
     if command.action == "set_humidity":
         _check_humidity_target(body["humidity"], attributes)
     return body
+
+
+def temperature_fits(value: Any, attributes: dict) -> bool:
+    """A temperature the entity takes now: a number in its live `min_temp` and `max_temp` (HA's defaults when it
+    publishes none) and, when it reports `target_temp_step`, on that step from the minimum."""
+    if not _is_number(value):
+        return False
+    low = _number(attributes.get("min_temp"), DEFAULT_MIN_TEMP)
+    high = _number(attributes.get("max_temp"), DEFAULT_MAX_TEMP)
+    if not low <= float(value) <= high:
+        return False
+    try:
+        _check_step(value, low, attributes, "target_temp_step")
+    except InvalidCommand:
+        return False
+    return True
+
+
+def humidity_fits(value: Any, attributes: dict) -> bool:
+    """A programmed humidity the entity takes now, by the rules of `set_humidity`: an integer, on a dehumidifier, in
+    its live range and step."""
+    if not _is_humidity(value):
+        return False
+    try:
+        _check_humidity_target(value, attributes)
+    except InvalidCommand:
+        return False
+    return True
 
 
 def _check_humidity_target(value: int, attributes: dict) -> None:
